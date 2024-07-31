@@ -1,0 +1,13 @@
+_target_: src.agents.dqn_agent.Agent
+#eps_start: 1.0
+#eps_end: 0.01
+#eps_last_frame: 1000
+
+env:
+  _target_: gym.make
+  id: CartPole-v1
+#replay_size: 1000
+
+buffer:
+  _target_: src.data.components.replay_buffer.ReplayBuffer
+  capacity: 1000 # size of the buffer

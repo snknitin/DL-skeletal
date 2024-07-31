@@ -2,3 +2,6 @@ _target_: src.data.rl_datamodule.RLDataModule
 batch_size: 200
 
 
+buffer:
+  _target_: src.data.components.replay_buffer.ReplayBuffer
+  capacity: 1000 # size of the buffer

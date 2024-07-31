@@ -14,6 +14,12 @@ import gym
 import argparse
 
 
+def process_state(state):
+    if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
+        return state[0]
+    else:
+        return state
+
 class DQN(nn.Module):
     """
     Simple MLP network
@@ -133,9 +139,7 @@ class Agent:
         else:
             state = self.process_state(self.state)
             state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-
-            if device not in ['cpu']:
-                state = state.cuda(device)
+            state = state.to(device)
 
             q_values = net(state)
             _, action = torch.max(q_values, dim=1)
@@ -179,8 +183,12 @@ class DQNLightning(pl.LightningModule):
     def __init__(self, hparams: argparse.Namespace) -> None:
         super().__init__()
 
-        hparams_dict = vars(hparams)
-        self.hparams.update(hparams_dict)
+        if isinstance(hparams, dict):
+            # If hparams is already a dict (loaded from checkpoint)
+            self.save_hyperparameters(hparams)
+        else:
+            # If hparams is a Namespace (initial creation)
+            self.save_hyperparameters(vars(hparams))
         # self.hparams = hparams
 
         self.env = gym.make(self.hparams.env)
@@ -251,12 +259,11 @@ class DQNLightning(pl.LightningModule):
         Returns:
             Training loss and log metrics
         """
-        device = self.get_device(batch)
         epsilon = max(self.hparams.eps_end, self.hparams.eps_start -
                       self.global_step + 1 / self.hparams.eps_last_frame)
 
         # step through environment with agent
-        reward, done = self.agent.play_step(self.net, epsilon, device)
+        reward, done = self.agent.play_step(self.net, epsilon, self.device)
         self.episode_reward += reward
 
         # calculates training loss
@@ -273,9 +280,9 @@ class DQNLightning(pl.LightningModule):
         if self.global_step % self.hparams.sync_rate == 0:
             self.target_net.load_state_dict(self.net.state_dict())
 
-        log = {'total_reward': torch.tensor(self.total_reward).to(device),
-               'reward': torch.tensor(reward).to(device),
-               'steps': torch.tensor(self.global_step).to(device)}
+        log = {'total_reward': torch.tensor(self.total_reward).to(self.device),
+               'reward': torch.tensor(reward).to(self.device),
+               'steps': torch.tensor(self.global_step).to(self.device)}
 
         return OrderedDict({'loss': loss, 'log': log, 'progress_bar': log})
 
@@ -298,6 +305,7 @@ class DQNLightning(pl.LightningModule):
 
 
 def main(hparams) -> None:
+    pl.seed_everything(1234)
     model = DQNLightning(hparams)
 
     trainer = pl.Trainer(
@@ -311,22 +319,23 @@ def main(hparams) -> None:
     trainer.fit(model)
     trainer.save_checkpoint("example.ckpt")
 
-    new_model = DQNLightning.load_from_checkpoint(checkpoint_path="example.ckpt")
-    env = gym.make(hparams.env)
-    obs = env.reset()
-    done = False
-    for i in range(30000):
+    # Load the model
+    # new_model = DQNLightning.load_from_checkpoint(checkpoint_path="example.ckpt", hparams=hparams)
 
-        q_values = new_model.net(torch.tensor([obs]))
-        _, action = torch.max(q_values, dim=1)
-        action = int(action.item())
-
-        obs, rew, done, info = env.step(action)
-        env.render()
-        # print(rew)
-        if done:
-            obs = env.reset()
-    env.close()
+    # env = gym.make(new_model.hparams.env)
+    # obs = process_state(env.reset())
+    # done = False
+    # for i in range(30000):
+    #     q_values = new_model(torch.tensor([obs], dtype=torch.float32))
+    #     _, action = torch.max(q_values, dim=1)
+    #     action = int(action.item())
+    #
+    #     obs, rew, done, info,_ = env.step(action)
+    #     env.render()
+    #     # print(rew)
+    #     if done:
+    #         obs = process_state(env.reset())
+    # env.close()
 
 
 if __name__ == '__main__':
@@ -357,3 +366,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args)
+
+
+
+
+
+

@@ -1,6 +1,10 @@
 import torch
-from pytorch_lightning import LightningDataModule
-from torch.utils.data import DataLoader, IterableDataset
+import os
+import hydra
+import omegaconf
+import rootutils
+import lightning as pl
+from torch.utils.data import DataLoader, IterableDataset, ConcatDataset, Dataset, random_split
 from src.data.components.replay_buffer import ReplayBuffer
 
 class RLDataset(IterableDataset):
@@ -21,7 +25,7 @@ class RLDataset(IterableDataset):
         for i in range(len(dones)):
             yield states[i], actions[i], rewards[i], dones[i], new_states[i]
 
-class RLDataModule(LightningDataModule):
+class RLDataModule(pl.LightningDataModule):
     def __init__(self, buffer: ReplayBuffer, batch_size: int):
         super().__init__()
         self.buffer = buffer
@@ -30,3 +34,24 @@ class RLDataModule(LightningDataModule):
     def train_dataloader(self):
         dataset = RLDataset(self.buffer)
         return DataLoader(dataset=dataset, batch_size=self.batch_size)
+
+if __name__=="__main__":
+    pl.seed_everything(3407)
+    root = rootutils.setup_root(__file__, pythonpath=True)
+
+    # # Initialize replay buffer
+    # buffer = ReplayBuffer(config.data.replay_size)
+    #
+    # # Initialize data module
+    # data_module = RLDataModule(buffer, config.batch_size)
+
+    buffer_cfg = omegaconf.OmegaConf.load(root / "configs" / "data" / "buffer.yaml")
+    buffer = hydra.utils.instantiate(buffer_cfg)
+
+    # data_cfg = omegaconf.OmegaConf.load(root / "configs" / "data" / "rl_data.yaml")
+    # data = hydra.utils.instantiate(data_cfg)
+
+    # # Initialize data module
+    data_module = RLDataModule(buffer, 200)
+
+    print(data_module)

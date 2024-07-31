@@ -1,0 +1,4 @@
+_target_: src.data.rl_datamodule.RLDataModule
+batch_size: 200
+
+

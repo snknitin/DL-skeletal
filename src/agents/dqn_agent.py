@@ -1,6 +1,10 @@
 import numpy as np
 import torch
 from torch import nn, optim
+import hydra
+import omegaconf
+import rootutils
+import lightning as pl
 import gym
 from src.data.components.replay_buffer import Experience, ReplayBuffer
 
@@ -9,12 +13,12 @@ class Agent:
     Base Agent class handeling the interaction with the environment
     Args:
         env: training environment
-        replay_buffer: replay buffer storing experiences
+        buffer: replay buffer storing experiences
     """
 
-    def __init__(self, env: gym.Env, replay_buffer: ReplayBuffer) -> None:
+    def __init__(self, env: gym.Env, buffer: ReplayBuffer) -> None:
         self.env = env
-        self.replay_buffer = replay_buffer
+        self.replay_buffer = buffer
         self.reset()
         self.state = self.env.reset()
 
@@ -80,3 +84,29 @@ class Agent:
         if done:
             self.reset()
         return reward, done
+
+
+if __name__=="__main__":
+    pl.seed_everything(3407)
+    root = rootutils.setup_root(__file__, pythonpath=True)
+
+    # # Initialize replay buffer
+    # buffer = ReplayBuffer(config.data.replay_size)
+    #
+    # # Initialize data module
+    # data_module = RLDataModule(buffer, config.batch_size)
+
+    buffer_cfg = omegaconf.OmegaConf.load(root / "configs" / "buffer" / "buffer.yaml")
+    buffer = hydra.utils.instantiate(buffer_cfg)
+
+    agent_cfg = omegaconf.OmegaConf.load(root / "configs" / "agent" / "agent.yaml")
+    agent = hydra.utils.instantiate(agent_cfg)
+
+    data_cfg = omegaconf.OmegaConf.load(root / "configs" / "data" / "rl_data.yaml")
+    data = hydra.utils.instantiate(data_cfg)
+
+    # steps = 1000
+    # for i in range(steps):
+    #     agent.play_step(net, epsilon=1.0)
+    #
+    # print(agent)

@@ -1,0 +1,35 @@
+_target_: src.models.rl_module.DQNLightning
+
+
+net:
+  _target_: src.models.components.dqn_nn.DQN
+  obs_size: 4  # for CartPole-v1
+  n_actions: 2  # for CartPole-v1
+  hidden_size: 128
+
+target_net:
+  _target_: src.models.components.dqn_nn.DQN
+  obs_size: 4  # for CartPole-v1
+  n_actions: 2  # for CartPole-v1
+  hidden_size: 128
+
+env: CartPole-v0
+
+buffer:
+  _target_: src.data.components.replay_buffer.ReplayBuffer
+  capacity: 1000 # size of the buffer
+
+
+warm_start_steps: 1000
+episode_length: 200
+
+# Agent
+eps_start: 1.0
+eps_end: 0.01
+eps_last_frame: 1000
+
+
+sync_rate: 10
+lr: 1e-2
+gamma: 0.99
+batch_size: 200

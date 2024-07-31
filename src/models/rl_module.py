@@ -11,12 +11,12 @@ from src.agents.dqn_agent import Agent
 from src.data.rl_datamodule import RLDataModule, RLDataset
 from collections import OrderedDict
 from src.models.components.dqn_nn import DQN
-
+from torchmetrics import MaxMetric, MeanMetric
 
 class DQNLightning(pl.LightningModule):
     """ Basic DQN Model """
 
-    def __init__(self,env: str, net: DQN, target_net: DQN, buffer,
+    def __init__(self,env: str, net: DQN, target_net: DQN, buffer,optimizer,
                  eps_start: float, eps_end: float, eps_last_frame: int,
                  sync_rate: int, lr: float, gamma: float, warm_start_steps:int,
                  episode_length: int,batch_size: int) -> None:
@@ -39,7 +39,11 @@ class DQNLightning(pl.LightningModule):
         self.total_reward = 0
         self.episode_reward = 0
 
+        self.lr = lr
+
         self.populate(self.hparams.warm_start_steps)
+        # for averaging loss across batches
+        self.train_loss = MeanMetric()
 
     def populate(self, steps: int = 1000) -> None:
         """
@@ -115,16 +119,33 @@ class DQNLightning(pl.LightningModule):
         if self.global_step % self.hparams.sync_rate == 0:
             self.target_net.load_state_dict(self.net.state_dict())
 
-        log = {'total_reward': torch.tensor(self.total_reward).to(self.device),
-               'reward': torch.tensor(reward).to(self.device),
-               'steps': torch.tensor(self.global_step).to(self.device)}
+        total_reward = torch.tensor(self.total_reward,dtype=torch.float32).to(self.device)
+        reward = torch.tensor(reward).to(self.device)
+        steps = torch.tensor(self.global_step).to(self.device)
+
+        log = {'total_reward': total_reward,
+               'reward': reward,
+               'steps': steps}
+
+        # update and log metrics
+        self.train_loss(loss)
+        self.log("train/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log("reward", reward.item(), on_step=True, on_epoch=False, prog_bar=False)
+        self.log("total_reward", total_reward.item(), on_step=False, on_epoch=True, prog_bar=True)
 
         return OrderedDict({'loss': loss, 'log': log, 'progress_bar': log})
 
-    def configure_optimizers(self):  # -> List[Optimizer]:
-        """ Initialize Adam optimizer"""
-        optimizer = optim.Adam(self.net.parameters(), lr=self.hparams.lr)
-        return [optimizer]
+    def configure_optimizers(self):
+        optimizer = self.hparams.optimizer(self.parameters(),lr=self.lr)
+        # cycle momentum needs to be False for Adam to work
+        # lr_scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer = optimizer,
+        #                                          base_lr = self.lr,
+        #                                          max_lr= 0.5,
+        #                                           step_size_up = 35,
+        #                                           step_size_down = 40,
+        #                                           cycle_momentum= False)
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,self.trainer.max_epochs,0)
+        return [optimizer] , [lr_scheduler]
 
     def train_dataloader(self) -> DataLoader:
         """Initialize the Replay Buffer dataset used for retrieving experiences"""

@@ -70,7 +70,7 @@ class Agent:
 
         action = self.get_action(net, epsilon, device)
 
-        new_state, reward, done, _, _ = self.env.step(action)
+        new_state, reward, done, info, _ = self.env.step(action)
 
         # Process states
         state = np.array(self.process_state(self.state))

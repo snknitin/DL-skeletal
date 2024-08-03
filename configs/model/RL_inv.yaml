@@ -19,7 +19,24 @@ target_net:
   n_actions: 2  # for CartPole-v1
   hidden_size: 128
 
-env: CartPole-v1
+#env: CartPole-v1
+env:
+  _target_: gym.make
+  id: 'MultiSKU-v0'
+  env_cfg:
+    item_nbr: ${item_nbr}
+    data_dir: ${paths.data_dir}/item_id_${item_nbr}/
+    holding_cost: 0.1
+    shortage_cost: 1.0
+    fc_lt_mean: [5]
+    fc_lt_var: [1]
+    num_fc: 1
+    num_sku: 1
+    forecast_horizon: 100
+    starting_week: 12351
+
+
+seed: ${seed}
 
 buffer:
   _target_: src.data.components.replay_buffer.ReplayBuffer

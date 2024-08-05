@@ -13,10 +13,13 @@ from collections import OrderedDict
 from src.models.components.dqn_nn import DQN
 from torchmetrics import MaxMetric, MeanMetric
 
+from src import gymenv  # This import is enough to register the environment
+
+
 class DQNLightning(pl.LightningModule):
     """ Basic DQN Model """
 
-    def __init__(self,env: str, net: DQN, target_net: DQN, buffer,optimizer,
+    def __init__(self,env: str, seed:int,  net: DQN, target_net: DQN, buffer,optimizer,
                  eps_start: float, eps_end: float, eps_last_frame: int,
                  sync_rate: int, lr: float, gamma: float, warm_start_steps:int,
                  episode_length: int,batch_size: int) -> None:
@@ -26,7 +29,13 @@ class DQNLightning(pl.LightningModule):
 
         # self.hparams = hparams
 
-        self.env = gym.make(self.hparams.env)
+        # self.env = gym.make(self.hparams.env)
+        self.env = gym.make(self.hparams.env['id'], env_cfg=self.hparams.env['env_cfg'])
+
+        self.env.action_space.seed(self.hparams.seed)
+        self.env.observation_space.seed(self.hparams.seed)
+
+
         obs_size = self.env.observation_space.shape[0]
         n_actions = self.env.action_space.n
 
@@ -34,7 +43,7 @@ class DQNLightning(pl.LightningModule):
         self.target_net = self.hparams.target_net
 
         self.buffer = self.hparams.buffer
-        self.agent = Agent(self.env, self.buffer)
+        self.agent = Agent(self.env, self.buffer,self.hparams.seed)
 
         self.total_reward = 0
         self.episode_reward = 0

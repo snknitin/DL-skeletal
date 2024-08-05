@@ -20,23 +20,31 @@ target_net:
   hidden_size: 128
 
 #env: CartPole-v1
+#env:
+#  _target_: gym.make
+#  id: 'MultiSKU-v0'
+#  env_cfg:
+#    item_nbr: ${item_nbr}
+#    data_dir: ${paths.data_dir}/item_id_${item_nbr}/
+#    holding_cost: 0.1
+#    shortage_cost: 1.0
+#    fc_lt_mean: [5]
+#    fc_lt_var: [1]
+#    num_fc: 1
+#    num_sku: 1
+#    forecast_horizon: 100
+#    starting_week: 12351
+
 env:
   _target_: gym.make
-  id: 'MultiSKU-v0'
+  id: 'DummyEnv-v0'
   env_cfg:
-    item_nbr: ${item_nbr}
-    data_dir: ${paths.data_dir}/item_id_${item_nbr}/
-    holding_cost: 0.1
-    shortage_cost: 1.0
-    fc_lt_mean: [5]
-    fc_lt_var: [1]
-    num_fc: 1
-    num_sku: 1
-    forecast_horizon: 100
-    starting_week: 12351
+    item_nbr: 8645745
+    max_steps: 200
+    state_size: 4
+    action_size: 2
 
-
-seed: ${seed}
+seed: 3407 #${seed}
 
 buffer:
   _target_: src.data.components.replay_buffer.ReplayBuffer
@@ -55,4 +63,4 @@ eps_last_frame: 1000
 sync_rate: 10
 lr: 1e-2
 gamma: 0.99
-batch_size: ${batch_size}
+batch_size: 150 #${batch_size}

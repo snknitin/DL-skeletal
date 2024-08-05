@@ -16,11 +16,12 @@ class Agent:
         buffer: replay buffer storing experiences
     """
 
-    def __init__(self, env: gym.Env, buffer: ReplayBuffer) -> None:
+    def __init__(self, env: gym.Env, buffer: ReplayBuffer, seed: int) -> None:
         self.env = env
+        self.seed = seed
         self.replay_buffer = buffer
         self.reset()
-        self.state = self.env.reset()
+        self.state = self.env.reset(seed = self.seed)
 
     def process_state(self, state):
         if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
@@ -30,7 +31,7 @@ class Agent:
 
     def reset(self) -> None:
         """ Resents the environment and updates the state"""
-        self.state = self.process_state(self.env.reset())
+        self.state = self.process_state(self.env.reset(seed = self.seed))
 
     def get_action(self, net: nn.Module, epsilon: float, device: str) -> int:
         """

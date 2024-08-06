@@ -1,4 +1,5 @@
 # src/environments/dummy_env.py
+from typing import Optional
 
 import gym
 from gym import spaces
@@ -19,7 +20,9 @@ class DummyEnv(gym.Env):
         self.action_space = spaces.Discrete(self.action_size)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.state_size,), dtype=np.float32)
 
-    def reset(self):
+    def reset(self, seed: Optional[int]=None, options: Optional[dict] = None):
+        super().reset(seed =seed)
+        self.np_random = np.random.default_rng(seed)
         self.current_step = 0
         self.state = self.np_random.uniform(low=-1, high=1, size=(self.state_size,))
         return self.state

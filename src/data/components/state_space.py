@@ -18,7 +18,10 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 class StateSpace:
-    def __init__(self, num_fcs: int, lt_values: List[int], rp_arrays: List[List[int]], forecast_horizon: int):
+    def __init__(self, seed: int, num_fcs: int, lt_values: List[int], rp_arrays: List[List[int]], forecast_horizon: int):
+        # seed setting in state space
+        self.rng = np.random.default_rng(seed)  # Create a separate RNG
+
         self.num_fcs = num_fcs
         self.lt_values = torch.tensor(lt_values, dtype=torch.int32)
         self.rp_arrays = torch.tensor(rp_arrays, dtype=torch.int32)
@@ -30,27 +33,50 @@ class StateSpace:
 
         # Padding for past sales to get rs_lt during S0
         self.max_lt = max(lt_values)
-        self.sales_history = torch.zeros((num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
+        self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
         # Random initial sales when env is reset for prior timesteps
-        self.sales_history[:, -self.max_lt:] = torch.randint(0, 20, (num_fcs, self.max_lt)).float()
+        self.sales_history[:, -self.max_lt:] = torch.randint(0, 20, (self.num_fcs, self.max_lt)).float()
 
-        # Random initial on-hand inventory
-        self.on_hand = torch.ceil(torch.rand(num_fcs, dtype=torch.float32) * 100)
-        # self.on_hand = torch.randint(50, 200, (num_fcs,)).float()
+        self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
 
-        self.action_history = torch.zeros((num_fcs, forecast_horizon), dtype=torch.float32)
+        self.action_history = torch.zeros((self.num_fcs, forecast_horizon), dtype=torch.float32)
         # self.action_pipeline = torch.zeros((num_fcs, forecast_horizon), dtype=torch.float32)
 
         # Making sure to replicate the situation where there were prior actions before S0 to get action_pipeline
-        self.action_pipeline = [deque(maxlen=forecast_horizon) for _ in range(num_fcs)]
-        for fc in range(num_fcs):
-            for _ in range(2):  # Initialize with 2 prior random actions
-                action = torch.randint(0, 2, (1,)).item()
-                # Any prior RP. These will get replenished based on LT
-                timestamp = self.current_timestep - torch.randint(1, lt_values[fc], (1,)).item()
-                self.action_pipeline[fc].append((action, timestamp))
+        self.action_pipeline = [deque(maxlen=forecast_horizon) for _ in range(self.num_fcs)]
+
+        self.zero_state()
+        self.endpoint = self.forecast_horizon - self.max_lt
+        self.reset_count = 0
 
         self.forecast = None  # To be set by the environment
+
+    def set_seed(self, seed: int):
+        """Set a new seed for the random number generator"""
+        self.rng = np.random.default_rng(seed)
+
+    def reinitialize(self):
+        """Reinitialize the state with the current RNG"""
+        self.zero_state()
+
+    def zero_state(self):
+        """
+        Create the initial state to fill up with actions pipeline to reset after episode is done
+        :return:
+        """
+        self.current_timestep = 0
+        # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
+
+        self.on_hand = torch.from_numpy(self.rng.uniform(0, 100, size=self.num_fcs)).float().ceil()
+
+        # Random initial on-hand inventory
+        for fc in range(self.num_fcs):
+            for _ in range(2):  # Initialize with 2 prior random actions
+                action = self.rng.integers(0, 10)
+                # Any prior RP. These will get replenished based on LT
+                timestamp = self.current_timestep - self.rng.integers(1, self.lt_values[fc])
+                self.action_pipeline[fc].append((action, timestamp))
+
 
     def set_forecast(self, forecast: torch.Tensor):
         """Set the forecast for all FCs."""
@@ -145,24 +171,53 @@ class StateSpace:
         """Return the dimension of the state vector."""
         return 8 * self.num_fcs
 
+    def get_current_time_step(self):
+        """
+        Returns the time step of the state
+        :return:
+        """
+        return self.current_timestep
+
 
 if __name__=="__main__":
     # Initialize the StateSpace
     num_fcs = 3
-    lt_values = [2, 2, 2]
+    lt_values = [2,2,2]
     forecast_horizon = 30
 
     # Create RP arrays (example: review every 3 days for all FCs)
     rp_arrays = [[1 if (i + 1) % 3 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
 
-    state_space = StateSpace(num_fcs, lt_values, rp_arrays, forecast_horizon)
+    seed = 43
+    state_space = StateSpace(seed, num_fcs, lt_values, rp_arrays, forecast_horizon)
 
     # Set the forecast (normally provided by the environment)
     forecast = torch.ceil(torch.rand((num_fcs, forecast_horizon))) * 10  # Random forecast for demonstration
+    state_space.set_seed(seed)
     state_space.set_forecast(forecast)
 
     # Simulate a few timesteps
-    for _ in range(10):
+    for _ in range(5):
+        sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
+        actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
+        state_space.update(sales, actions)
+
+        # print("sales for 3 FCs:" , sales)
+        # print("actions", actions)
+        current_state = state_space.get_state()
+        print(f"Current state: {current_state}")
+        print(f"State dimension: {state_space.get_state_dim()}")
+
+    seed +=1
+    # print(seed)
+    # state_space.set_seed(seed)
+    print("\n\n Using new seed \n\n")
+    # Update the seed and reinitialize the existing state space
+    state_space.set_seed(seed)
+    state_space.reinitialize()
+
+    # Simulate a few timesteps
+    for _ in range(5):
         sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
         state_space.update(sales, actions)

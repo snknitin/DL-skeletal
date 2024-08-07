@@ -4,7 +4,7 @@ default_root_dir: ${paths.output_dir}
 
 min_epochs: 1 # prevents early stopping
 max_epochs: 1000
-
+reload_dataloaders_every_n_epochs: 1
 accelerator: gpu
 devices: 1
 

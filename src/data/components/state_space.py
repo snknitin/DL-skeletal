@@ -181,8 +181,8 @@ class StateSpace:
 
 if __name__=="__main__":
     # Initialize the StateSpace
-    num_fcs = 3
-    lt_values = [2,2,2]
+    num_fcs = 1
+    lt_values = [2]
     forecast_horizon = 30
 
     # Create RP arrays (example: review every 3 days for all FCs)
@@ -193,11 +193,13 @@ if __name__=="__main__":
 
     # Set the forecast (normally provided by the environment)
     forecast = torch.ceil(torch.rand((num_fcs, forecast_horizon))) * 10  # Random forecast for demonstration
+
+
     state_space.set_seed(seed)
     state_space.set_forecast(forecast)
 
     # Simulate a few timesteps
-    for _ in range(5):
+    for _ in range(30):
         sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
         state_space.update(sales, actions)
@@ -206,18 +208,19 @@ if __name__=="__main__":
         # print("actions", actions)
         current_state = state_space.get_state()
         print(f"Current state: {current_state}")
-        print(f"State dimension: {state_space.get_state_dim()}")
+        # print(f"State dimension: {state_space.get_state_dim()}")
 
     seed +=1
-    # print(seed)
+    print(seed)
     # state_space.set_seed(seed)
-    print("\n\n Using new seed \n\n")
     # Update the seed and reinitialize the existing state space
     state_space.set_seed(seed)
     state_space.reinitialize()
+    print("\n\n Using new seed \n\n")
+
 
     # Simulate a few timesteps
-    for _ in range(5):
+    for _ in range(30):
         sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
         state_space.update(sales, actions)
@@ -226,4 +229,5 @@ if __name__=="__main__":
         # print("actions", actions)
         current_state = state_space.get_state()
         print(f"Current state: {current_state}")
-        print(f"State dimension: {state_space.get_state_dim()}")
+        # print(f"State dimension: {state_space.get_state_dim()}")
+

@@ -109,8 +109,12 @@ class StateSpace:
             self.on_hand[fc] += repl_received
             self.on_hand[fc] -= sales[fc]
 
-            # Add new action to pipeline
-            self.action_pipeline[fc].append((actions[fc].item(), self.current_timestep))
+            # Add new action to pipeline only if RP value is 1
+            if self.rp_arrays[fc, self.current_timestep] == 1:
+                self.action_pipeline[fc].append((actions[fc].item(), self.current_timestep))
+            # else:
+            #     # If RP is 0, add a zero action to maintain consistency
+            #     self.action_pipeline[fc].append((0, self.current_timestep))
 
         self.current_timestep += 1
 
@@ -195,7 +199,7 @@ def step(state,demand):
     inv_begin = state[0].reshape(-1, 1).item()
     inv_repl = state[3].reshape(-1, 1).item()
     repl_received = inv_repl - inv_begin
-    # print("\n",inventory_state.action_pipeline)
+    print("\n",inventory_state.action_pipeline)
     # print(f"inv_begin: {inv_begin}, inv_repl :{inv_repl}, repl:{repl_received}")
 
     sales = np.minimum(inv_repl, demand)  # Random sales
@@ -213,7 +217,7 @@ if __name__=="__main__":
     forecast_horizon = 100
     reset_count = 0
     # Create RP arrays (example: review every 3 days for all FCs)
-    rp_arrays = [[1 if (i + 1) % 1 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
+    rp_arrays = [[1 if (i + 1) % 2 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
     # Set the forecast (normally provided by the environment)
     mapped_demand = torch.ceil(torch.rand((num_fcs, forecast_horizon)) * 9).numpy()
 

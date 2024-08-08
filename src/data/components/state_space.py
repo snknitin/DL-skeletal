@@ -66,7 +66,7 @@ class StateSpace:
         # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
 
         self.on_hand = torch.from_numpy(self.rng.uniform(0, 100, size=self.num_fcs)).float().ceil()
-        self.action_pipeline = [deque(maxlen=forecast_horizon) for _ in range(self.num_fcs)]
+        self.action_pipeline = [deque(maxlen=self.forecast_horizon) for _ in range(self.num_fcs)]
 
         # Random initial on-hand inventory
         for fc in range(self.num_fcs):
@@ -210,24 +210,24 @@ if __name__=="__main__":
     # Initialize the StateSpace
     num_fcs = 1
     lt_values = [3]
-    forecast_horizon = 30
+    forecast_horizon = 100
     reset_count = 0
     # Create RP arrays (example: review every 3 days for all FCs)
     rp_arrays = [[1 if (i + 1) % 1 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
     # Set the forecast (normally provided by the environment)
     mapped_demand = torch.ceil(torch.rand((num_fcs, forecast_horizon)) * 9).numpy()
 
-    seed = 0
+    seed = 43
     # Initialize
     inventory_state = StateSpace(seed, num_fcs, lt_values, rp_arrays, forecast_horizon)
     #state = inventory_state.get_state()
 
 
     # Simulate a few timesteps
-    for i in range(100):
+    for i in range(5):
         state = reset(seed,inventory_state)
         print(f"Current state: {state}")
-        for _ in range(30):
+        for _ in range(forecast_horizon):
             next_state = step(state,mapped_demand[0][_].item())
             state= next_state
         print("\n\n\n")

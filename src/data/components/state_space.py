@@ -235,3 +235,55 @@ if __name__=="__main__":
         seed = seed + reset_count
 
 
+    # # Initialize the StateSpace
+    #     num_fcs = 1
+    #     lt_values = [2]
+    #     forecast_horizon = 30
+    #
+    #     # Create RP arrays (example: review every 3 days for all FCs)
+    #     rp_arrays = [[1 if (i + 1) % 3 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
+    #
+    #     seed = 43
+    #     state_space = StateSpace(seed, num_fcs, lt_values, rp_arrays, forecast_horizon)
+    #
+    #     # Set the forecast (normally provided by the environment)
+    #     forecast = torch.ceil(torch.rand((num_fcs, forecast_horizon))) * 10  # Random forecast for demonstration
+    #
+    #
+    #     state_space.set_seed(seed)
+    #     state_space.set_forecast(forecast)
+    #
+    #     print(state_space.action_pipeline)
+    #
+    #     # Simulate a few timesteps
+    #     for _ in range(30):
+    #         sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
+    #         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
+    #         state_space.update(sales, actions)
+    #
+    #         # print("sales for 3 FCs:" , sales)
+    #         # print("actions", actions)
+    #         current_state = state_space.get_state()
+    #         print(f"Current state: {current_state}")
+    #         # print(f"State dimension: {state_space.get_state_dim()}")
+    #
+    #     seed +=3
+    #     print(seed)
+    #     # state_space.set_seed(seed)
+    #     # Update the seed and reinitialize the existing state space
+    #     state_space.set_seed(seed)
+    #     state_space.reinitialize()
+    #     print("\n\n Using new seed \n\n")
+    #
+    #
+    #     # Simulate a few timesteps
+    #     for _ in range(30):
+    #         sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
+    #         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
+    #         state_space.update(sales, actions)
+    #
+    #         # print("sales for 3 FCs:" , sales)
+    #         # print("actions", actions)
+    #         current_state = state_space.get_state()
+    #         print(f"Current state: {current_state}")
+    #         # print(f"State dimension: {state_space.get_state_dim()}")

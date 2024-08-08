@@ -111,8 +111,6 @@ class MultiSKUEnvironment(gym.Env):
         t = self.inventory_state.get_current_time_step()
         done = bool(t==self.inventory_state.endpoint)  # Define your terminal condition
 
-
-
         realized_demand = np.ceil(self.Exp_demand.iloc[t].values.reshape(-1, self.num_sku).astype(float))
         curr_week_no = self.dem_ref.iloc[self.start_time_index, 0]
         curr_pl_ratio = self.pl_ratio_table[curr_week_no]

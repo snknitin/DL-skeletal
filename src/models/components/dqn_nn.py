@@ -1,5 +1,5 @@
 import torch.nn as nn
-
+from torch.nn import LeakyReLU,SELU,Dropout
 
 class DQN(nn.Module):
     """
@@ -24,3 +24,23 @@ class DQN(nn.Module):
 
 
 
+
+
+class BranchDuelingDQN(nn.Module):
+    def __init__(self, obs_size: int, n_actions: int, hidden_size: int = 128):
+        super().__init__()
+        self.feature = nn.Sequential(
+            nn.Linear(obs_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU()
+        )
+        self.value = nn.Linear(hidden_size, 1)
+        self.advantage = nn.Linear(hidden_size, n_actions)
+
+    def forward(self, x):
+        x = x.float()
+        feature = self.feature(x)
+        value = self.value(feature)
+        advantage = self.advantage(feature)
+        return value + advantage - advantage.mean(dim=-1, keepdim=True)

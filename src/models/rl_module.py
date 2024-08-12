@@ -4,6 +4,7 @@ import omegaconf
 import rootutils
 import gym
 import torch
+from lightning.pytorch.tuner import Tuner
 from torch import nn, optim
 import lightning as pl
 from torch.utils.data import DataLoader, random_split, Dataset
@@ -11,15 +12,15 @@ from src.agents.dqn_agent import Agent
 from src.data.rl_datamodule import RLDataModule, RLDataset
 from collections import OrderedDict
 from src.models.components.dqn_nn import DQN
-from torchmetrics import MaxMetric, MeanMetric
+from torchmetrics import MaxMetric, MeanMetric, SumMetric
 
-from src import gymenv  # This import is enough to register the environment
+from src import gymenv  # this is enough to register the environment
 
 
 class DQNLightning(pl.LightningModule):
     """ Basic DQN Model """
 
-    def __init__(self,env: str, seed:int,  net: DQN, target_net: DQN, buffer,optimizer,
+    def __init__(self,env: str, seed: int, net: DQN, target_net: DQN, buffer,optimizer,
                  eps_start: float, eps_end: float, eps_last_frame: int,
                  sync_rate: int, lr: float, gamma: float, warm_start_steps:int,
                  episode_length: int,batch_size: int) -> None:
@@ -27,17 +28,15 @@ class DQNLightning(pl.LightningModule):
 
         self.save_hyperparameters()
 
-        # self.hparams = hparams
-
         # self.env = gym.make(self.hparams.env)
         self.env = gym.make(self.hparams.env['id'], env_cfg=self.hparams.env['env_cfg'])
 
+        # Need to set these seeds too
         self.env.action_space.seed(self.hparams.seed)
         self.env.observation_space.seed(self.hparams.seed)
 
-
-        obs_size = self.env.observation_space.shape[0]
-        n_actions = self.env.action_space.n
+        # obs_size = self.env.observation_space.shape[0]
+        # n_actions = self.env.action_space.n
 
         self.net = self.hparams.net
         self.target_net = self.hparams.target_net
@@ -49,10 +48,33 @@ class DQNLightning(pl.LightningModule):
         self.episode_reward = 0
 
         self.lr = lr
+        print(self.lr)
+
+        # Custom counters
+        self.episode_count = 0
+        self.step_count = 0
 
         self.populate(self.hparams.warm_start_steps)
-        # for averaging loss across batches
+
+        # Metrics
+        # for averaging loss across batches - epochs/episodes
         self.train_loss = MeanMetric()
+        self.avg_episodic_reward = MeanMetric()
+
+        self.episode_reward = SumMetric()
+        self.episode_rewards = [0]
+        self.cumulative_step_reward = 0
+
+        self.episode_length = MeanMetric()
+
+        self.avg_holding_cost = MeanMetric()
+        self.avg_shortage_cost = MeanMetric()
+
+        self.total_holding_cost = SumMetric()
+        self.total_shortage_cost = SumMetric()
+
+        # checking sync across all the places it is sent
+        assert self.buffer is self.agent.replay_buffer, "Buffer Mismatch!"
 
     def populate(self, steps: int = 1000) -> None:
         """
@@ -85,19 +107,29 @@ class DQNLightning(pl.LightningModule):
         """
         states, actions, rewards, dones, next_states = batch
         # Convert actions to torch.int64
-        actions = actions.long()
-        state_action_values = self.net(states).gather(1, actions.unsqueeze(-1)).squeeze(-1)
+        # Ensure actions are long and have the right shape
+        actions = actions.long().unsqueeze(-1)  # Shape: (150, 1)
 
+        # Get current Q values
+        current_q_values = self.net(states)  # Shape should be (150, n)
+
+        # Select the Q values for the actions taken
+        # Since we only have 1 action outputed we only have 1 q value - change action_dim to 20
+        current_q_values = current_q_values.gather(1, actions)  # Shape: (150, 1)
+        # Compute target Q values
         with torch.no_grad():
-            next_state_values = self.target_net(next_states).max(1)[0]
-            next_state_values[dones] = 0.0
-            next_state_values = next_state_values.detach()
+            next_q_values = self.target_net(next_states).max(1)[0]
+            next_q_values[dones] = 0.0
+            next_q_values = next_q_values.detach()
+            target_q_values = rewards + self.hparams.gamma * next_q_values
 
-        expected_state_action_values = next_state_values * self.hparams.gamma + rewards
+        return nn.MSELoss()(current_q_values.squeeze(), target_q_values)
 
-        return nn.MSELoss()(state_action_values, expected_state_action_values)
+    def on_train_start(self):
+        # To ensure every run is proper from start to finish and not mid-way from populate buffer
+        self.env.reset()
 
-    def training_step(self, batch, nb_batch) -> OrderedDict: # : Tuple[torch.Tensor, torch.Tensor]
+    def training_step(self, batch, nb_batch): # : Tuple[torch.Tensor, torch.Tensor]
         """
         Carries out a single step through the environment to update the replay buffer.
         Then calculates loss based on the minibatch recieved
@@ -107,42 +139,112 @@ class DQNLightning(pl.LightningModule):
         Returns:
             Training loss and log metrics
         """
+        self.step_count += 1
         epsilon = max(self.hparams.eps_end, self.hparams.eps_start -
-                      self.global_step + 1 / self.hparams.eps_last_frame)
+                      self.step_count + 1 / self.hparams.eps_last_frame)
 
         # step through environment with agent
-        reward, done = self.agent.play_step(self.net, epsilon, self.device)
-        self.episode_reward += reward
+        reward, done, info = self.agent.play_step(self.net, epsilon, self.device)
+        # self.episode_reward += reward
 
         # calculates training loss
         loss = self.dqn_mse_loss(batch)
+        # update loss and log
+        self.train_loss(loss)
+        # Update both reward metrics
+        self.cumulative_step_reward += reward.item()
+        self.episode_reward(reward)
+        self.avg_episodic_reward(reward)
+
+        # Log moving averages
+        window_size = min(5, len(self.episode_rewards))
+        mavg_reward = sum(self.episode_rewards[-window_size:]) / window_size
+        cumulative_episode_reward = sum(self.episode_rewards)
+
+
+        self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/cumulative_step_reward", self.cumulative_step_reward, on_step=False, on_epoch=True)
+        self.log("train/cumulative_episodic_reward", cumulative_episode_reward, on_step=False, on_epoch=True)
+        self.log("train/Moving_avg_5_ep_reward", mavg_reward, on_step=False, on_epoch=True)
+
+
+        # Update metrics
+        self.episode_length(1)  # Increment by 1 for each step
+        # Update metrics
+        self.avg_holding_cost(info['holding_cost'])
+        self.total_holding_cost(info['holding_cost'])
+        self.avg_shortage_cost(info['shortage_cost'])
+        self.total_shortage_cost(info['shortage_cost'])
 
         # if self.trainer.use_dp or self.trainer.use_ddp2:
         #     loss = loss.unsqueeze(0)
 
-        if done:
-            self.total_reward = self.episode_reward
-            self.episode_reward = 0
-
         # Soft update of target network
-        if self.global_step % self.hparams.sync_rate == 0:
+        if self.step_count % self.hparams.sync_rate == 0:
             self.target_net.load_state_dict(self.net.state_dict())
 
-        total_reward = torch.tensor(self.total_reward,dtype=torch.float32).to(self.device)
-        reward = torch.tensor(reward).to(self.device)
+        # total_reward = torch.tensor(self.total_reward,dtype=torch.float32).to(self.device)
+        reward = torch.tensor(reward,dtype=torch.float32).to(self.device).item()
         steps = torch.tensor(self.global_step).to(self.device)
 
-        log = {'total_reward': total_reward,
+        log = {'loss': loss,
                'reward': reward,
                'steps': steps}
 
-        # update and log metrics
-        self.train_loss(loss)
-        self.log("train/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=True)
-        self.log("reward", reward.item(), on_step=True, on_epoch=False, prog_bar=False)
-        self.log("total_reward", total_reward.item(), on_step=False, on_epoch=True, prog_bar=True)
 
-        return OrderedDict({'loss': loss, 'log': log, 'progress_bar': log})
+        # Log step-level metrics
+        # Log environment step metrics
+        self.log("env_step/reward", reward, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("env_step/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log('env_step/inv_at_day_start', info["inv_at_beginning_of_day"], on_step=False, on_epoch=True,
+                 prog_bar=False)
+        self.log('env_step/inv_after_replen', info["inv_after_replen"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/inv_at_end_of_day', info["inv_at_end_of_day"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/action', info["action"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/repl_rec', info["repl_rec"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/sales_at_FC', info["sales_at_FC"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/holding_cost', info["holding_cost"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/shortage_cost', info["shortage_cost"], on_step=False, on_epoch=True, prog_bar=False)
+        self.log('env_step/mapped_dem', info["mapped_dem"], on_step=False, on_epoch=True, prog_bar=False)
+
+        # End of episode
+        if done:
+            self.episode_count += 1
+            episode_reward = self.episode_reward.compute()
+            episode_avg_reward = self.avg_episodic_reward.compute()
+            self.episode_rewards.append(episode_reward.item())
+
+
+            # Log episode-level metrics only when an episode is done
+            self.log("episode/total_reward", episode_reward.item(), on_step=False, on_epoch=True, prog_bar=True)
+            self.log("episode/avg_reward", episode_avg_reward.item(), on_step=False, on_epoch=True, prog_bar=True)
+
+            self.log("episode/length", self.episode_length.compute(), on_step=False, on_epoch=True)
+            self.log("episode/avg_loss", self.train_loss.compute(), on_step=False, on_epoch=True)
+            self.log("episode/avg_holding_cost", self.avg_holding_cost.compute(), on_step=False, on_epoch=True)
+            self.log("episode/total_holding_cost", self.total_holding_cost.compute(), on_step=False, on_epoch=True)
+            self.log("episode/avg_shortage_cost", self.avg_shortage_cost.compute(), on_step=False, on_epoch=True)
+            self.log("episode/total_shortage_cost", self.total_shortage_cost.compute(), on_step=False, on_epoch=True)
+
+            # Log custom episode count
+            self.log("episode/count", self.episode_count, on_step=False, on_epoch=True)
+
+            # Reset metrics for next episode
+            self.avg_holding_cost.reset()
+            self.total_holding_cost.reset()
+            self.avg_shortage_cost.reset()
+            self.total_shortage_cost.reset()
+
+            # Reset metrics for next episode
+            self.episode_reward.reset()
+            self.episode_length.reset()
+
+            # Reset the environment for the next episode
+            self.env.reset()
+
+        return {'loss': loss, 'reward': reward}
+
+
 
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters(),lr=self.lr)
@@ -161,6 +263,9 @@ class DQNLightning(pl.LightningModule):
         dataset = RLDataset(self.buffer, self.hparams.episode_length)
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.hparams.batch_size,
+                                # num_workers=4,  # Adjust this based on your system
+                                # pin_memory=True if torch.cuda.is_available() else False,
+                                # persistent_workers = True
                                 )
         return dataloader
 
@@ -187,7 +292,7 @@ if __name__=="__main__":
     model = hydra.utils.instantiate(model_cfg)
 
 
-    trainer = pl.Trainer(
+    trainer = pl.Trainer(accelerator='cpu',
             # gpus=1,
             # distributed_backend='dp',
             max_epochs=1000,
@@ -195,5 +300,17 @@ if __name__=="__main__":
             val_check_interval=100
         )
 
-    trainer.fit(model)
-    trainer.save_checkpoint("example.ckpt")
+    # Create a Tuner
+    tuner = Tuner(trainer)
+    # finds learning rate automatically
+    # sets hparams.lr or hparams.learning_rate to that learning rate
+    tuner.lr_find(model, max_lr=0.9, min_lr=1e-7)
+    # Auto-scale batch size with binary search
+    # tuner.scale_batch_size(model, mode="binsearch")
+    print("Tuned Learning Rate is :", model.hparams.lr)
+    print("Tuned Learning Rate is :", model.lr)
+
+
+
+    # trainer.fit(model)
+    # trainer.save_checkpoint("example.ckpt")

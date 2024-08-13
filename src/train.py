@@ -9,8 +9,9 @@ from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
 from lightning.pytorch.tuner import Tuner
 
+from src import gymenv   # This is important to register the environment
 
-rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+rootutils.setup_root(__file__, dotenv=True, pythonpath=True)
 # ------------------------------------------------------------------------------------ #
 # the setup_root above is equivalent to:
 # - adding project root dir to PYTHONPATH
@@ -76,12 +77,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         tuner = Tuner(trainer)
         # finds learning rate automatically
         # sets hparams.lr or hparams.learning_rate to that learning rate
-        lr_finder = tuner.lr_find(model)
-        best_lr = lr_finder.suggestion()
-        model.lr = best_lr
+        tuner.lr_find(model,max_lr=0.9,min_lr=1e-7)
         # Auto-scale batch size with binary search
         #tuner.scale_batch_size(model, mode="binsearch")
-        print("Tuned Learning Rate is :",best_lr)
+        print("Tuned Learning Rate is :",model.hparams.lr)
         #print("Tuned Batch Size is :", model.hparams.batch_size)
 
     object_dict = {
@@ -112,6 +111,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         trainer.test(model=model, ckpt_path=ckpt_path)
         log.info(f"Best ckpt path: {ckpt_path}")
 
+    print("Tuned Learning Rate was :", model.hparams.lr)
     test_metrics = trainer.callback_metrics
 
     # merge train and test metrics

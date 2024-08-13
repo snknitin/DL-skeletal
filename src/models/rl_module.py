@@ -47,6 +47,7 @@ class DQNLightning(pl.LightningModule):
         self.total_reward = 0
         self.episode_reward = 0
 
+
         self.lr = lr
         print(self.lr)
 
@@ -65,7 +66,7 @@ class DQNLightning(pl.LightningModule):
         self.episode_rewards = [0]
         self.cumulative_step_reward = 0
 
-        self.episode_length = MeanMetric()
+        self.episode_length = SumMetric()
 
         self.avg_holding_cost = MeanMetric()
         self.avg_shortage_cost = MeanMetric()
@@ -161,7 +162,6 @@ class DQNLightning(pl.LightningModule):
         mavg_reward = sum(self.episode_rewards[-window_size:]) / window_size
         cumulative_episode_reward = sum(self.episode_rewards)
 
-
         self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train/cumulative_step_reward", self.cumulative_step_reward, on_step=False, on_epoch=True)
         self.log("train/cumulative_episodic_reward", cumulative_episode_reward, on_step=False, on_epoch=True)
@@ -245,7 +245,6 @@ class DQNLightning(pl.LightningModule):
         return {'loss': loss, 'reward': reward}
 
 
-
     def configure_optimizers(self):
         optimizer = self.hparams.optimizer(self.parameters(),lr=self.lr)
         # cycle momentum needs to be False for Adam to work
@@ -288,7 +287,7 @@ if __name__=="__main__":
     # buffer_cfg = omegaconf.OmegaConf.load(root / "configs" / "data" / "buffer.yaml")
     # buffer = hydra.utils.instantiate(buffer_cfg)
 
-    model_cfg = omegaconf.OmegaConf.load(root / "configs" / "model" / "RL_inv.yaml")
+    model_cfg = omegaconf.OmegaConf.load(root / "configs" / "model" / "Single_FC.yaml")
     model = hydra.utils.instantiate(model_cfg)
 
 

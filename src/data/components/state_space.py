@@ -196,25 +196,25 @@ def reset(seed,inventory_state):
 
 def step(state,demand):
 
-    inv_begin = state[0].reshape(-1, 1).item()
-    inv_repl = state[3].reshape(-1, 1).item()
+    inv_begin = state[0::fc_st_dim].reshape(-1, num_fcs)
+    inv_repl = state[3::fc_st_dim].reshape(-1, num_fcs)
     repl_received = inv_repl - inv_begin
     print("\n",inventory_state.action_pipeline)
     # print(f"inv_begin: {inv_begin}, inv_repl :{inv_repl}, repl:{repl_received}")
 
     sales = np.minimum(inv_repl, demand)  # Random sales
     actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
-    inventory_state.update(torch.Tensor([sales]), actions)
+    inventory_state.update(sales.flatten(), actions)
 
     next_state = inventory_state.get_state()
-    print(f"Next state: {next_state}, sales:{ sales}, action :{actions.item()}, repl:{repl_received}")
+    print(f"Next state: {next_state}, sales:{ sales}, action :{actions}, repl:{repl_received}")
     return next_state
 
 if __name__=="__main__":
     # Initialize the StateSpace
-    num_fcs = 1
-    lt_values = [3]
-    forecast_horizon = 100
+    num_fcs = 3
+    lt_values = [3,2,4]
+    forecast_horizon = 30
     reset_count = 0
     # Create RP arrays (example: review every 3 days for all FCs)
     rp_arrays = [[1 if (i + 1) % 2 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
@@ -226,13 +226,13 @@ if __name__=="__main__":
     inventory_state = StateSpace(seed, num_fcs, lt_values, rp_arrays, forecast_horizon)
     #state = inventory_state.get_state()
 
-
+    fc_st_dim = inventory_state.get_state_dim() // num_fcs
     # Simulate a few timesteps
-    for i in range(5):
+    for i in range(3):
         state = reset(seed,inventory_state)
         print(f"Current state: {state}")
         for _ in range(forecast_horizon):
-            next_state = step(state,mapped_demand[0][_].item())
+            next_state = step(state,mapped_demand[:,_])
             state= next_state
         print("\n\n\n")
         reset_count += 1

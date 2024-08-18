@@ -18,12 +18,12 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 class StateSpace:
-    def __init__(self, seed: int, num_fcs: int, lt_values: List[int], rp_arrays: List[List[int]], forecast_horizon: int):
+    def __init__(self, seed: int, num_fcs: int, lt_params: List[Tuple[float, float]], rp_arrays: List[List[int]], forecast_horizon: int):
         # seed setting in state space
         self.rng = np.random.default_rng(seed)  # Create a separate RNG
 
         self.num_fcs = num_fcs
-        self.lt_values = torch.tensor(lt_values, dtype=torch.int32)
+        self.lt_params = lt_params  # List of (mean, std) tuples for each FC
         self.rp_arrays = torch.tensor(rp_arrays, dtype=torch.int32)
         self.forecast_horizon = forecast_horizon
 
@@ -32,7 +32,8 @@ class StateSpace:
         self.current_timestep = 0
 
         # Padding for past sales to get rs_lt during S0
-        self.max_lt = max(lt_values)
+        self.max_lt = int(max(param[0] + 1* param[1] for param in lt_params))  # Approximate max LT
+
         self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
         self.action_history = torch.zeros((self.num_fcs, forecast_horizon), dtype=torch.float32)
         # Making sure to replicate the situation where there were prior actions before S0 to get action_pipeline
@@ -72,10 +73,14 @@ class StateSpace:
         for fc in range(self.num_fcs):
             for _ in range(2):  # Initialize with 2 prior random actions
                 action = self.rng.integers(0, 10)
+                lt = self.sample_lead_time(fc)
                 # Any prior RP. These will get replenished based on LT
-                timestamp = self.current_timestep - self.rng.integers(1, self.lt_values[fc])
-                self.action_pipeline[fc].append((action, timestamp))
+                timestamp = self.current_timestep - self.rng.integers(1, lt)
+                self.action_pipeline[fc].append((action, timestamp,lt))
 
+    def sample_lead_time(self, fc: int) -> int:
+        mean, std = self.lt_params[fc]
+        return max(1, int(round(self.rng.normal(mean, std))))
 
     def set_forecast(self, forecast: torch.Tensor):
         """Set the forecast for all FCs."""
@@ -96,13 +101,11 @@ class StateSpace:
 
         # Update on-hand inventory and action pipeline
         for fc in range(self.num_fcs):
-            lt = self.lt_values[fc]
-
             # Process replenishments
             repl_received = 0
             # Previous timestep repl_received to update the oh_curr
-            while self.action_pipeline[fc] and self.action_pipeline[fc][0][1] + lt <= self.current_timestep:
-                action, _ = self.action_pipeline[fc].popleft()
+            while self.action_pipeline[fc] and self.action_pipeline[fc][0][1] + self.action_pipeline[fc][0][2] <= self.current_timestep:
+                action, _,_ = self.action_pipeline[fc].popleft()
                 repl_received += action
 
             # Update on-hand inventory
@@ -111,10 +114,12 @@ class StateSpace:
 
             # Add new action to pipeline only if RP value is 1
             if self.rp_arrays[fc, self.current_timestep] == 1:
-                self.action_pipeline[fc].append((actions[fc].item(), self.current_timestep))
+                lt = self.sample_lead_time(fc)
+                self.action_pipeline[fc].append((actions[fc].item(), self.current_timestep, lt))
+
             # else:
-            #     # If RP is 0, add a zero action to maintain consistency
-            #     self.action_pipeline[fc].append((0, self.current_timestep))
+                #     # If RP is 0, add a zero action to maintain consistency
+                #     self.action_pipeline[fc].append((0, self.current_timestep))
 
         self.current_timestep += 1
 
@@ -123,29 +128,28 @@ class StateSpace:
         states = []
 
         for fc in range(self.num_fcs):
-            lt = self.lt_values[fc]
-            rp = self.rp_arrays[fc]
+            # rp = self.rp_arrays[fc]
 
             oh_curr = self.on_hand[fc]  # sales have already been deducted. Updated for new timestep
 
             # Replenishment should be received only if the LT for action in pipeline matches to today
             # Calculate replenishment received (if any) for this timestep
-            repl_received = sum(action for action, timestamp in self.action_pipeline[fc] if timestamp + lt == self.current_timestep)
+            repl_received = sum(action for action, timestamp,lt in self.action_pipeline[fc] if timestamp + lt == self.current_timestep)
 
             # On-hands after replenishment
             oh_repl = oh_curr + repl_received
 
             # Agent needs to see how much is left in the action pipeline yet to replen before taking an action.
             # Done after current timestamp replen is removed
-            action_pipeline = sum(action for action, _ in self.action_pipeline[fc])
+            action_pipeline = sum(action for action, _ ,_  in self.action_pipeline[fc])
 
-
-            dem_lt = self.forecast[fc, self.current_timestep:self.current_timestep + lt].sum()
+            next_lt = self.sample_lead_time(fc)  # Sample next LT for demand calculation
+            dem_lt = self.forecast[fc, self.current_timestep:self.current_timestep + next_lt].sum()
 
             # Calculate demand during coverage period (CP) using the RP array
-            cp_start = self.current_timestep + lt
+            cp_start = self.current_timestep + next_lt
             # cp_end = min(cp_start + torch.where(rp[cp_start:] == 1)[0][0].item() + 1, self.forecast_horizon)
-            next_rp = torch.where(rp[cp_start:] == 1)[0]
+            next_rp = torch.where(self.rp_arrays[fc, cp_start:] == 1)[0]
             if len(next_rp) > 0:
                 cp_end = min(cp_start + next_rp[0].item() + 1, self.forecast_horizon)
             else:
@@ -154,10 +158,10 @@ class StateSpace:
             dem_cp = self.forecast[fc, cp_start:cp_end].sum()
 
             # Realized sales for past lt time-steps
-            rs_lt = self.sales_history[fc, -lt:].sum()
+            rs_lt = self.sales_history[fc, -next_lt:].sum()
 
             # Calculate days left till next decision
-            next_decision = torch.where(rp[self.current_timestep:] == 1)[0]
+            next_decision = torch.where(self.rp_arrays[fc,self.current_timestep:] == 1)[0]
             days_left = next_decision[0].item() if len(next_decision) > 0 else 0
 
             # print(f"FC {fc}: oh_curr = {oh_curr}, oh_repl = {oh_repl}, repl_received = {repl_received}, action_pipeline = {action_pipeline}")
@@ -213,7 +217,7 @@ def step(state,demand):
 if __name__=="__main__":
     # Initialize the StateSpace
     num_fcs = 3
-    lt_values = [3,2,4]
+    lt_params = [(5, 1)] * num_fcs
     forecast_horizon = 30
     reset_count = 0
     # Create RP arrays (example: review every 3 days for all FCs)
@@ -223,7 +227,7 @@ if __name__=="__main__":
 
     seed = 43
     # Initialize
-    inventory_state = StateSpace(seed, num_fcs, lt_values, rp_arrays, forecast_horizon)
+    inventory_state = StateSpace(seed, num_fcs, lt_params, rp_arrays, forecast_horizon)
     #state = inventory_state.get_state()
 
     fc_st_dim = inventory_state.get_state_dim() // num_fcs

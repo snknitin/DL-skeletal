@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from src.data.components.replay_buffer import Experience, ReplayBuffer
 from src.gymenv import MultiFCEnvironment
 from src.models.components.dqn_nn import BranchDuelingDQN, BranchDuelingDQNMulti
-from src.gymenv.single_env import SingleFCEnvironment
+# from src.gymenv.single_env import SingleFCEnvironment
 from src.data.rl_datamodule import RLDataset
 
 class Agent:
@@ -53,13 +53,11 @@ class Agent:
         if np.random.random() < epsilon:
             action = self.env.action_space.sample()
         else:
-            state = self.process_state(self.state)
-            state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
-            state = state.to(device)
+            # state = self.process_state(self.state)
+            state = torch.tensor(self.state, dtype=torch.float32,device=device).unsqueeze(0)
 
-            q_values = net(state)
-            _, action = torch.max(q_values, dim=1)
-            action = int(action.item())
+            q_values = net(state).squeeze(0)
+            action = q_values.argmax(dim=-1).numpy()
 
         return action
 
@@ -105,7 +103,7 @@ if __name__=="__main__":
     buffer = ReplayBuffer(1000)
     seed = 3407
 
-    env_id= 'SingleFC-v0'
+    env_id= 'MultiFC-v0'
     env_cfg = {
     "item_nbr": 873764,
     "data_dir": data_dir,
@@ -113,21 +111,22 @@ if __name__=="__main__":
     "shortage_cost": 1.0,
     "fc_lt_mean": [3],
     "fc_lt_var": [1],
-    "num_fc": 16,
+    "num_fcs": 5,
     "num_sku": 1,
     "forecast_horizon": 100,
     "starting_week": 12351}
 
     env = MultiFCEnvironment(env_cfg)
-    net = BranchDuelingDQNMulti(obs_size=8*16,n_actions=20,num_fcs=16)
-    target_net = BranchDuelingDQNMulti(obs_size=8*16,n_actions=20,num_fcs=16)
+    obs_size = env.inventory_state.get_state_dim()
+    net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=env_cfg.get("num_fcs",16))
+    target_net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=env_cfg.get("num_fcs",16))
 
     agent = Agent(env,buffer,seed)
 
 
     steps = 1000
     for i in range(steps):
-        agent.play_step(net, epsilon=1.0)
+        agent.play_step(net, epsilon=0.5)
 
     #print(agent)
     dataset = RLDataset(buffer, 500)
@@ -139,18 +138,20 @@ if __name__=="__main__":
     states, actions, rewards, dones, next_states = batch
     # Convert actions to torch.int64
     # Ensure actions are long and have the right shape
-    actions = actions.long().unsqueeze(-1)  # Shape: (150, 1)
+    actions = actions.long() # Shape: (150, num_fcs)
 
     # Get current Q values
-    current_q_values = net(states)  # Shape should be (150, n)
+    current_q_values = net(states)  # Shape should be (150, fc, n)
 
     # Select the Q values for the actions taken
     # Since we only have 1 action outputed we only have 1 q value - change action_dim to 20
-    current_q_values = current_q_values.gather(1, actions)  # Shape: (150, 1)
+    current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)  # Shape: (150, 1)
     # Compute target Q values
     with torch.no_grad():
-        next_q_values = target_net(next_states).max(1)[0]
+        next_q_values = target_net(next_states).max(dim=-1)[0]
         next_q_values[dones] = 0.0
         next_q_values = next_q_values.detach()
         target_q_values = rewards + 0.99 * next_q_values
 
+    loss = nn.MSELoss()(current_q_values, target_q_values)
+    print(loss)

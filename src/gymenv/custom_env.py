@@ -34,16 +34,16 @@ class MultiFCEnvironment(gym.Env):
         self.sc = env_cfg.get('shortage_cost', 1.0)
         self.fc_lt_mean = np.array(env_cfg.get('fc_lt_mean', [5]))
         self.fc_lt_var = np.array(env_cfg.get('fc_lt_var', [1]))
-        self.num_fc = env_cfg.get('num_fc', 1)
+        self.num_fcs = env_cfg.get('num_fcs', 1)
         self.num_sku = env_cfg.get('num_sku', 1)
         self.num_regions = len(self.geo_ids_list)
         self.forecast_horizon = env_cfg.get('forecast_horizon', 100)
         self.starting_week = env_cfg.get('starting_week', 12351)
 
     def setup_state_space(self):
-        lead_times = np.random.normal(self.fc_lt_mean, self.fc_lt_var).astype(int).ravel()
-        rp_arrays = [[1 if (i + 1) % 1 == 0 else 0 for i in range(self.forecast_horizon)] for _ in range(self.num_fc)]
-        self.inventory_state = StateSpace(seed= self.base_seed, num_fcs=self.num_fc, lt_values=lead_times, rp_arrays=rp_arrays,
+        lt_params = [(5, 1)] * self.num_fcs
+        rp_arrays = [[1 if (i + 1) % 1 == 0 else 0 for i in range(self.forecast_horizon)] for _ in range(self.num_fcs)]
+        self.inventory_state = StateSpace(seed= self.base_seed, num_fcs=self.num_fcs, lt_params=lt_params, rp_arrays=rp_arrays,
                                           forecast_horizon=self.forecast_horizon)
         obs_shape = (self.inventory_state.get_state_dim(),)
         self.observation_space = spaces.Box(low=0, high=700, shape=obs_shape, dtype=np.float32)
@@ -90,7 +90,7 @@ class MultiFCEnvironment(gym.Env):
         curr_pl_ratio = self.pl_ratio_table[curr_week_no]
 
         mapped_forecast = np.array(self.Exp_demand.iloc[:self.forecast_horizon]) @ curr_pl_ratio
-        mapped_forecast = mapped_forecast.iloc[:, :self.num_fc]
+        mapped_forecast = mapped_forecast.iloc[:, :self.num_fcs]
 
         # Someway to get timestamp in state to go back to zero
         # Update the seed and reinitialize the existing state space
@@ -115,9 +115,9 @@ class MultiFCEnvironment(gym.Env):
         curr_week_no = self.dem_ref.iloc[self.start_time_index, 0]
         curr_pl_ratio = self.pl_ratio_table[curr_week_no]
 
-        fc_st_dim =self.inventory_state.get_state_dim()//self.num_fc
-        inventory_at_beginning_of_day = self.state[0::fc_st_dim].reshape(-1, self.num_sku)
-        inventory_after_replenishment = self.state[3::fc_st_dim].reshape(-1, self.num_sku)
+        fc_st_dim =self.inventory_state.get_state_dim()//self.num_fcs
+        inventory_at_beginning_of_day = self.state[0::fc_st_dim].reshape(-1, self.num_fcs)
+        inventory_after_replenishment = self.state[3::fc_st_dim].reshape(-1, self.num_fcs)
 
         reward, sales_at_FC, holding_cost, shortage_cost, mapped_demand = self.calculate_reward(
             inventory_after_replenishment, realized_demand, curr_pl_ratio)
@@ -126,22 +126,22 @@ class MultiFCEnvironment(gym.Env):
         inventory_at_end_of_day = inventory_after_replenishment - sales_at_FC
 
 
-        self.inventory_state.update(sales=torch.Tensor(sales_at_FC).flatten(), actions=torch.Tensor([action]).flatten())
+        self.inventory_state.update(sales=torch.from_numpy(sales_at_FC).flatten(), actions=torch.Tensor(np.array(action)).flatten())
         self.state = self.inventory_state.get_state()
 
         info = {
-            'inv_at_beginning_of_day': inventory_at_beginning_of_day.item(),
-            'inv_after_replen': inventory_after_replenishment.item(),
+            'inv_at_beginning_of_day': inventory_at_beginning_of_day,
+            'inv_after_replen': inventory_after_replenishment,
             'realised_dem': realized_demand,
-            'inv_at_end_of_day': inventory_at_end_of_day.item(),
-            'sales_at_FC': sales_at_FC.item(),
-            'holding_cost': holding_cost.item(),
-            'shortage_cost': shortage_cost.item(),
+            'inv_at_end_of_day': inventory_at_end_of_day,
+            'sales_at_FC': sales_at_FC,
+            'holding_cost': holding_cost,
+            'shortage_cost': shortage_cost,
             # 'repl_ord': action * self.multiplier,
             'action': action,
             # 'multiplier': self.multiplier,
-            'mapped_dem': mapped_demand.item(),
-            'repl_rec': repl_received.item()
+            'mapped_dem': mapped_demand,
+            'repl_rec': repl_received
         }
 
         return self.state.numpy(), reward, done, info
@@ -151,14 +151,17 @@ class MultiFCEnvironment(gym.Env):
         #
         inventory = inventory.numpy()
         mapped_demand = np.dot(demand.T,pl_ratio)
-        mapped_demand = mapped_demand[:,:self.num_fc]
+        mapped_demand = mapped_demand[:,:self.num_fcs]
 
         sales = np.minimum(inventory, mapped_demand)
         holding_cost = self.hc * np.maximum(inventory - mapped_demand, 0)
         shortage_cost = self.sc * np.maximum(-(inventory - mapped_demand),0)
         sales_revenue = self.sc * sales * 5
-        reward = np.sum(sales_revenue) - np.sum(holding_cost) - np.sum(shortage_cost)
-        # reward = - np.sum(holding_cost) - np.sum(shortage_cost)
+        # Calculate reward for each FC
+        reward = sales_revenue - holding_cost - shortage_cost
+
+        # Sum across the first axis (usually time) to get a reward per FC
+        reward = np.sum(reward, axis=0)
 
         return reward, sales, holding_cost, shortage_cost, mapped_demand
 

@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 from src.data.components.state_space import StateSpace
 import torch
 
-class MultiSKUEnvironment(gym.Env):
+class MultiFCEnvironment(gym.Env):
     def __init__(self, env_cfg: Dict[str, Any]):
         super().__init__()
         self.item_nbr = env_cfg['item_nbr']
@@ -50,7 +50,7 @@ class MultiSKUEnvironment(gym.Env):
 
     def setup_action_space(self):
         # self.action_space = spaces.Box(low=0, high=20, shape=(self.num_fc, self.num_sku), dtype=np.float32)
-        self.action_space = spaces.Discrete(20)
+        self.action_space = spaces.MultiDiscrete([20] * self.num_fcs)
 
     def generate_demand_data(self):
         """ Can be removed"""
@@ -78,9 +78,8 @@ class MultiSKUEnvironment(gym.Env):
 
         if seed is not None:
             self.base_seed = seed
-
-        self.reset_count += 1
         new_seed = self.base_seed + self.reset_count
+
 
         self.dem_ref = self.generate_demand_data()
         self.Exp_demand = self.generate_demand_data()
@@ -95,16 +94,17 @@ class MultiSKUEnvironment(gym.Env):
 
         # Someway to get timestamp in state to go back to zero
         # Update the seed and reinitialize the existing state space
-        self.inventory_state.set_seed(new_seed)
-        self.inventory_state.reinitialize()
+        if self.reset_count>1:
+            self.inventory_state.set_seed(new_seed)
+            self.inventory_state.reinitialize()
+
         self.inventory_state.set_forecast(np.array(mapped_forecast.T))
-        # set timestep = 0
 
         self.realized_demand_all = self.gen_realised_dem(self.Exp_demand)
 
         # self.state, self.multiplier = self.inventory_state.get_state()
         self.state = self.inventory_state.get_state()
-
+        self.reset_count += 1
         return self.state.numpy()
 
     def step(self, action):
@@ -123,11 +123,11 @@ class MultiSKUEnvironment(gym.Env):
             inventory_after_replenishment, realized_demand, curr_pl_ratio)
 
         repl_received = inventory_after_replenishment - inventory_at_beginning_of_day
+        inventory_at_end_of_day = inventory_after_replenishment - sales_at_FC
+
 
         self.inventory_state.update(sales=torch.Tensor(sales_at_FC).flatten(), actions=torch.Tensor([action]).flatten())
-
         self.state = self.inventory_state.get_state()
-        inventory_at_end_of_day = inventory_after_replenishment - sales_at_FC
 
         info = {
             'inv_at_beginning_of_day': inventory_at_beginning_of_day.item(),
@@ -158,6 +158,8 @@ class MultiSKUEnvironment(gym.Env):
         shortage_cost = self.sc * np.maximum(-(inventory - mapped_demand),0)
         sales_revenue = self.sc * sales * 5
         reward = np.sum(sales_revenue) - np.sum(holding_cost) - np.sum(shortage_cost)
+        # reward = - np.sum(holding_cost) - np.sum(shortage_cost)
+
         return reward, sales, holding_cost, shortage_cost, mapped_demand
 
 

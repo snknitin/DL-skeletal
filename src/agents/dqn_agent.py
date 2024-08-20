@@ -6,7 +6,13 @@ import omegaconf
 import rootutils
 import lightning as pl
 import gym
+from torch.utils.data import DataLoader
+
 from src.data.components.replay_buffer import Experience, ReplayBuffer
+from src.gymenv import MultiFCEnvironment
+from src.models.components.dqn_nn import BranchDuelingDQN, BranchDuelingDQNMulti
+from src.gymenv.single_env import SingleFCEnvironment
+from src.data.rl_datamodule import RLDataset
 
 class Agent:
     """
@@ -21,7 +27,7 @@ class Agent:
         self.seed = seed
         self.replay_buffer = buffer
         self.reset()
-        self.state = self.env.reset(seed = self.seed)
+        self.state = self.env.reset(seed=self.seed)
 
     def process_state(self, state):
         if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
@@ -31,7 +37,7 @@ class Agent:
 
     def reset(self) -> None:
         """ Resents the environment and updates the state"""
-        self.state = self.process_state(self.env.reset(seed = self.seed))
+        self.state = self.process_state(self.env.reset(seed=self.seed))
 
     def get_action(self, net: nn.Module, epsilon: float, device: str) -> int:
         """
@@ -71,7 +77,7 @@ class Agent:
 
         action = self.get_action(net, epsilon, device)
 
-        new_state, reward, done, info, _ = self.env.step(action)
+        new_state, reward, done, info = self.env.step(action)
 
         # Process states
         state = np.array(self.process_state(self.state))
@@ -84,30 +90,67 @@ class Agent:
         self.state = new_state
         if done:
             self.reset()
-        return reward, done
+        return reward, done, info
 
 
 if __name__=="__main__":
     pl.seed_everything(3407)
     root = rootutils.setup_root(__file__, pythonpath=True)
+    data_dir = root/"data/item_id_873764"
 
-    # # Initialize replay buffer
-    # buffer = ReplayBuffer(config.data.replay_size)
-    #
-    # # Initialize data module
-    # data_module = RLDataModule(buffer, config.batch_size)
+    # agent_cfg = omegaconf.OmegaConf.load(root / "configs" / "agent" / "agent.yaml")
+    # agent_cfg.env.env_cfg.data_dir = data_dir
+    # agent = hydra.utils.instantiate(agent_cfg)
 
-    buffer_cfg = omegaconf.OmegaConf.load(root / "configs" / "buffer" / "buffer.yaml")
-    buffer = hydra.utils.instantiate(buffer_cfg)
+    buffer = ReplayBuffer(1000)
+    seed = 3407
 
-    agent_cfg = omegaconf.OmegaConf.load(root / "configs" / "agent" / "agent.yaml")
-    agent = hydra.utils.instantiate(agent_cfg)
+    env_id= 'SingleFC-v0'
+    env_cfg = {
+    "item_nbr": 873764,
+    "data_dir": data_dir,
+    "holding_cost": 0.1,
+    "shortage_cost": 1.0,
+    "fc_lt_mean": [3],
+    "fc_lt_var": [1],
+    "num_fc": 16,
+    "num_sku": 1,
+    "forecast_horizon": 100,
+    "starting_week": 12351}
 
-    data_cfg = omegaconf.OmegaConf.load(root / "configs" / "data" / "rl_data.yaml")
-    data = hydra.utils.instantiate(data_cfg)
+    env = MultiFCEnvironment(env_cfg)
+    net = BranchDuelingDQNMulti(obs_size=8*16,n_actions=20,num_fcs=16)
+    target_net = BranchDuelingDQNMulti(obs_size=8*16,n_actions=20,num_fcs=16)
 
-    # steps = 1000
-    # for i in range(steps):
-    #     agent.play_step(net, epsilon=1.0)
-    #
-    # print(agent)
+    agent = Agent(env,buffer,seed)
+
+
+    steps = 1000
+    for i in range(steps):
+        agent.play_step(net, epsilon=1.0)
+
+    #print(agent)
+    dataset = RLDataset(buffer, 500)
+    dataloader = DataLoader(dataset=dataset,
+                            batch_size=150)
+
+    batch = next(iter(dataloader))
+    #print(batch)
+    states, actions, rewards, dones, next_states = batch
+    # Convert actions to torch.int64
+    # Ensure actions are long and have the right shape
+    actions = actions.long().unsqueeze(-1)  # Shape: (150, 1)
+
+    # Get current Q values
+    current_q_values = net(states)  # Shape should be (150, n)
+
+    # Select the Q values for the actions taken
+    # Since we only have 1 action outputed we only have 1 q value - change action_dim to 20
+    current_q_values = current_q_values.gather(1, actions)  # Shape: (150, 1)
+    # Compute target Q values
+    with torch.no_grad():
+        next_q_values = target_net(next_states).max(1)[0]
+        next_q_values[dones] = 0.0
+        next_q_values = next_q_values.detach()
+        target_q_values = rewards + 0.99 * next_q_values
+

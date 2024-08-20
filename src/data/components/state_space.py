@@ -129,6 +129,7 @@ class StateSpace:
 
         for fc in range(self.num_fcs):
             # rp = self.rp_arrays[fc]
+            lt = self.lt_params[fc][0] # mean lt for fc
 
             oh_curr = self.on_hand[fc]  # sales have already been deducted. Updated for new timestep
 
@@ -143,11 +144,11 @@ class StateSpace:
             # Done after current timestamp replen is removed
             action_pipeline = sum(action for action, _ ,_  in self.action_pipeline[fc])
 
-            next_lt = self.sample_lead_time(fc)  # Sample next LT for demand calculation
-            dem_lt = self.forecast[fc, self.current_timestep:self.current_timestep + next_lt].sum()
+            # next_lt = self.sample_lead_time(fc)  # Sample next LT for demand calculation
+            dem_lt = self.forecast[fc, self.current_timestep:self.current_timestep + lt].sum()
 
             # Calculate demand during coverage period (CP) using the RP array
-            cp_start = self.current_timestep + next_lt
+            cp_start = self.current_timestep + lt
             # cp_end = min(cp_start + torch.where(rp[cp_start:] == 1)[0][0].item() + 1, self.forecast_horizon)
             next_rp = torch.where(self.rp_arrays[fc, cp_start:] == 1)[0]
             if len(next_rp) > 0:
@@ -158,7 +159,7 @@ class StateSpace:
             dem_cp = self.forecast[fc, cp_start:cp_end].sum()
 
             # Realized sales for past lt time-steps
-            rs_lt = self.sales_history[fc, -next_lt:].sum()
+            rs_lt = self.sales_history[fc, -lt:].sum()
 
             # Calculate days left till next decision
             next_decision = torch.where(self.rp_arrays[fc,self.current_timestep:] == 1)[0]

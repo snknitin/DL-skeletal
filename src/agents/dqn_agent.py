@@ -111,15 +111,16 @@ if __name__=="__main__":
     "shortage_cost": 1.0,
     "fc_lt_mean": [3],
     "fc_lt_var": [1],
-    "num_fcs": 5,
+    "num_fcs": 3,
     "num_sku": 1,
     "forecast_horizon": 100,
     "starting_week": 12351}
 
+    num_fcs = env_cfg.get("num_fcs",16)
     env = MultiFCEnvironment(env_cfg)
-    obs_size = env.inventory_state.get_state_dim()
-    net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=env_cfg.get("num_fcs",16))
-    target_net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=env_cfg.get("num_fcs",16))
+    obs_size = env.inventory_state.get_state_dim()//num_fcs
+    net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=num_fcs)
+    target_net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=num_fcs)
 
     agent = Agent(env,buffer,seed)
 
@@ -131,7 +132,7 @@ if __name__=="__main__":
     #print(agent)
     dataset = RLDataset(buffer, 500)
     dataloader = DataLoader(dataset=dataset,
-                            batch_size=150)
+                            batch_size=100)
 
     batch = next(iter(dataloader))
     #print(batch)

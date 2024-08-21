@@ -23,7 +23,7 @@ class DQNLightning(pl.LightningModule):
     def __init__(self,env: str, seed: int, net: DQN, target_net: DQN, buffer,optimizer,
                  eps_start: float, eps_end: float, eps_last_frame: int,
                  sync_rate: int, lr: float, gamma: float, warm_start_steps:int,
-                 episode_length: int,batch_size: int) -> None:
+                 dataset_sample_size: int,batch_size: int) -> None:
         super().__init__()
 
         self.save_hyperparameters()
@@ -59,12 +59,15 @@ class DQNLightning(pl.LightningModule):
 
         # Metrics
         # for averaging loss across batches - epochs/episodes
+
         self.train_loss = MeanMetric()
         self.avg_episodic_reward = MeanMetric()
 
         self.episode_reward = SumMetric()
         self.episode_rewards = [0]
         self.cumulative_step_reward = 0
+        self.cumulative_episode_reward = 0
+        self.mavg_reward = 0
 
         self.episode_length = SumMetric()
 
@@ -109,17 +112,17 @@ class DQNLightning(pl.LightningModule):
         states, actions, rewards, dones, next_states = batch
         # Convert actions to torch.int64
         # Ensure actions are long and have the right shape
-        actions = actions.long().unsqueeze(-1)  # Shape: (150, 1)
+        actions = actions.long()  # Shape: (150, num_fc)
 
         # Get current Q values
-        current_q_values = self.net(states)  # Shape should be (150, n)
+        current_q_values = self.net(states)  # Shape should be (150, num_fc, n_action)
 
         # Select the Q values for the actions taken
         # Since we only have 1 action outputed we only have 1 q value - change action_dim to 20
-        current_q_values = current_q_values.gather(1, actions)  # Shape: (150, 1)
+        current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)  # Shape: (150, 1)
         # Compute target Q values
         with torch.no_grad():
-            next_q_values = self.target_net(next_states).max(1)[0]
+            next_q_values = self.target_net(next_states).max(dim=-1)[0]
             next_q_values[dones] = 0.0
             next_q_values = next_q_values.detach()
             target_q_values = rewards + self.hparams.gamma * next_q_values
@@ -129,6 +132,22 @@ class DQNLightning(pl.LightningModule):
     def on_train_start(self):
         # To ensure every run is proper from start to finish and not mid-way from populate buffer
         self.env.reset()
+        # Reset metrics for next episode
+
+        self.train_loss.reset()
+        self.avg_episodic_reward.reset()
+
+        self.avg_holding_cost.reset()
+        self.total_holding_cost.reset()
+        self.avg_shortage_cost.reset()
+        self.total_shortage_cost.reset()
+
+        # Reset metrics for next episode
+        self.episode_reward.reset()
+        self.episode_length.reset()
+
+        self.episode_rewards = [0]
+        self.cumulative_step_reward = 0
 
     def training_step(self, batch, nb_batch): # : Tuple[torch.Tensor, torch.Tensor]
         """
@@ -142,7 +161,7 @@ class DQNLightning(pl.LightningModule):
         """
         self.step_count += 1
         epsilon = max(self.hparams.eps_end, self.hparams.eps_start -
-                      self.step_count + 1 / self.hparams.eps_last_frame)
+                      ((self.step_count + 1) / (self.hparams.eps_last_frame)))
 
         # step through environment with agent
         reward, done, info = self.agent.play_step(self.net, epsilon, self.device)
@@ -162,9 +181,14 @@ class DQNLightning(pl.LightningModule):
         mavg_reward = sum(self.episode_rewards[-window_size:]) / window_size
         cumulative_episode_reward = sum(self.episode_rewards)
 
+
+
         self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/epsilon", epsilon, on_step=False, on_epoch=True, prog_bar=True)
+
         self.log("train/cumulative_step_reward", self.cumulative_step_reward, on_step=False, on_epoch=True)
         self.log("train/cumulative_episodic_reward", cumulative_episode_reward, on_step=False, on_epoch=True)
+
         self.log("train/Moving_avg_5_ep_reward", mavg_reward, on_step=False, on_epoch=True)
 
 
@@ -195,7 +219,7 @@ class DQNLightning(pl.LightningModule):
         # Log step-level metrics
         # Log environment step metrics
         self.log("env_step/reward", reward, on_step=False, on_epoch=True, prog_bar=False)
-        self.log("env_step/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=True)
+        self.log("env_step/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=False)
         self.log('env_step/inv_at_day_start', info["inv_at_beginning_of_day"], on_step=False, on_epoch=True,
                  prog_bar=False)
         self.log('env_step/inv_after_replen', info["inv_after_replen"], on_step=False, on_epoch=True, prog_bar=False)
@@ -216,8 +240,8 @@ class DQNLightning(pl.LightningModule):
 
 
             # Log episode-level metrics only when an episode is done
-            self.log("episode/total_reward", episode_reward.item(), on_step=False, on_epoch=True, prog_bar=True)
-            self.log("episode/avg_reward", episode_avg_reward.item(), on_step=False, on_epoch=True, prog_bar=True)
+            self.log("episode/total_reward", episode_reward.item(), on_step=False, on_epoch=True, prog_bar=False)
+            self.log("episode/avg_reward", episode_avg_reward.item(), on_step=False, on_epoch=True, prog_bar=False)
 
             self.log("episode/length", self.episode_length.compute(), on_step=False, on_epoch=True)
             self.log("episode/avg_loss", self.train_loss.compute(), on_step=False, on_epoch=True)
@@ -237,6 +261,7 @@ class DQNLightning(pl.LightningModule):
 
             # Reset metrics for next episode
             self.episode_reward.reset()
+            self.avg_episodic_reward.reset()
             self.episode_length.reset()
 
             # Reset the environment for the next episode
@@ -259,7 +284,7 @@ class DQNLightning(pl.LightningModule):
 
     def train_dataloader(self) -> DataLoader:
         """Initialize the Replay Buffer dataset used for retrieving experiences"""
-        dataset = RLDataset(self.buffer, self.hparams.episode_length)
+        dataset = RLDataset(self.buffer, self.hparams.dataset_sample_size)
         dataloader = DataLoader(dataset=dataset,
                                 batch_size=self.hparams.batch_size,
                                 # num_workers=4,  # Adjust this based on your system
@@ -267,6 +292,8 @@ class DQNLightning(pl.LightningModule):
                                 # persistent_workers = True
                                 )
         return dataloader
+
+
 
     def get_device(self, batch) -> str:
         """Retrieve device currently being used by minibatch"""

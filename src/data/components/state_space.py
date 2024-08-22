@@ -1,10 +1,11 @@
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from collections import deque
 
 
 import random
 import torch
 import numpy as np
+import bisect
 
 # Set a fixed seed
 seed = 42
@@ -18,12 +19,12 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 class StateSpace:
-    def __init__(self, seed: int, num_fcs: int, lt_params: List[Tuple[float, float]], rp_arrays: List[List[int]], forecast_horizon: int):
+    def __init__(self, seed: int, num_fcs: int, lt_ecdfs: List[List[Tuple[int, float]]], rp_arrays: List[List[int]], forecast_horizon: int):
         # seed setting in state space
         self.rng = np.random.default_rng(seed)  # Create a separate RNG
-
         self.num_fcs = num_fcs
-        self.lt_params = lt_params  # List of (mean, std) tuples for each FC
+        self.lt_ecdfs = [self.prepare_ecdf(ecdf) for ecdf in lt_ecdfs]
+        self.expected_lt = [self.calculate_expected_lt(ecdf) for ecdf in self.lt_ecdfs]
         self.rp_arrays = torch.tensor(rp_arrays, dtype=torch.int32)
         self.forecast_horizon = forecast_horizon
 
@@ -32,7 +33,7 @@ class StateSpace:
         self.current_timestep = 0
 
         # Padding for past sales to get rs_lt during S0
-        self.max_lt = int(max(param[0] + 1* param[1] for param in lt_params))  # Approximate max LT
+        self.max_lt = int(max(param[0] for param in lt_ecdfs[0]))  # Approximate max LT
 
         self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
         self.action_history = torch.zeros((self.num_fcs, forecast_horizon), dtype=torch.float32)
@@ -66,21 +67,57 @@ class StateSpace:
         self.current_timestep = 0
         # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
 
-        self.on_hand = torch.from_numpy(self.rng.uniform(0, 100, size=self.num_fcs)).float().ceil()
+        self.on_hand = torch.from_numpy(self.rng.uniform(0, 100, size=self.num_fcs)).int()
         self.action_pipeline = [deque(maxlen=self.forecast_horizon) for _ in range(self.num_fcs)]
 
         # Random initial on-hand inventory
         for fc in range(self.num_fcs):
             for _ in range(2):  # Initialize with 2 prior random actions
                 action = self.rng.integers(0, 10)
-                lt = self.sample_lead_time(fc)
+                lt = self.sample_constrained_lead_time(fc, self.current_timestep)
                 # Any prior RP. These will get replenished based on LT
-                timestamp = self.current_timestep - self.rng.integers(1, lt)
+                timestamp = self.current_timestep - self.rng.choice(list(range(0, lt)))
                 self.action_pipeline[fc].append((action, timestamp,lt))
 
+    def prepare_ecdf(self, ecdf: List[Tuple[int, float]]) -> Dict[str, List[float]]:
+        lt_values, probabilities = zip(*sorted(ecdf))
+        return {
+            'lt_values': list(lt_values),
+            'cum_probabilities': list(probabilities)
+        }
+
     def sample_lead_time(self, fc: int) -> int:
-        mean, std = self.lt_params[fc]
-        return max(1, int(round(self.rng.normal(mean, std))))
+        ecdf = self.lt_ecdfs[fc]
+        r = self.rng.random()
+        idx = bisect.bisect_right(ecdf['cum_probabilities'], r)
+        return ecdf['lt_values'][idx]
+
+    def calculate_expected_lt(self, ecdf: Dict[str, List[float]]) -> int:
+        lt_values = ecdf['lt_values']
+        probabilities = [ecdf['cum_probabilities'][0]] + [
+            ecdf['cum_probabilities'][i] - ecdf['cum_probabilities'][i - 1] for i in
+            range(1, len(ecdf['cum_probabilities']))]
+        expected_lt = sum(lt * prob for lt, prob in zip(lt_values, probabilities))
+        return round(expected_lt)
+
+    def sample_constrained_lead_time(self, fc: int, current_timestamp: int) -> int:
+        if not self.action_pipeline[fc]:
+            return self.sample_lead_time(fc)
+
+        last_action = self.action_pipeline[fc][-1]
+        last_replenishment_time = last_action[1] + last_action[2]
+        min_lead_time = max(1, last_replenishment_time - current_timestamp)
+
+        attempts = 0
+        max_attempts = 100  # Prevent infinite loop
+        while attempts < max_attempts:
+            lt = self.sample_lead_time(fc)
+            if lt >= min_lead_time and current_timestamp + lt > last_replenishment_time:
+                return lt
+            attempts += 1
+
+        # If we couldn't find a suitable lead time, return the minimum acceptable one
+        return min_lead_time
 
     def set_forecast(self, forecast: torch.Tensor):
         """Set the forecast for all FCs."""
@@ -90,6 +127,9 @@ class StateSpace:
     def update(self, sales: torch.Tensor, actions: torch.Tensor):
         """Update the state with new sales and actions."""
         assert sales.shape == actions.shape == (self.num_fcs,)
+
+        sales = sales.int()
+        actions = actions.int()
 
         # Update histories
         self.sales_history = torch.roll(self.sales_history, shifts=-1, dims=1)
@@ -111,10 +151,11 @@ class StateSpace:
             # Update on-hand inventory
             self.on_hand[fc] += repl_received
             self.on_hand[fc] -= sales[fc]
+            assert self.on_hand[fc]>=0, "OH is negative"
 
             # Add new action to pipeline only if RP value is 1
             if self.rp_arrays[fc, self.current_timestep] == 1:
-                lt = self.sample_lead_time(fc)
+                lt = self.sample_constrained_lead_time(fc, self.current_timestep)
                 self.action_pipeline[fc].append((actions[fc].item(), self.current_timestep, lt))
 
             # else:
@@ -129,7 +170,7 @@ class StateSpace:
 
         for fc in range(self.num_fcs):
             # rp = self.rp_arrays[fc]
-            lt = self.lt_params[fc][0] # mean lt for fc
+            lt = self.expected_lt[fc]
 
             oh_curr = self.on_hand[fc]  # sales have already been deducted. Updated for new timestep
 
@@ -212,36 +253,40 @@ def step(state,demand):
     inventory_state.update(sales.flatten(), actions)
 
     next_state = inventory_state.get_state()
-    print(f"Next state: {next_state}, sales:{ sales}, action :{actions}, repl:{repl_received}")
+    # print(f"Next state: {next_state}, sales:{ sales.item()}, action :{actions.item()}, repl:{repl_received.item()}")
     return next_state
 
 if __name__=="__main__":
     # Initialize the StateSpace
-    num_fcs = 3
-    lt_params = [(5, 1)] * num_fcs
-    forecast_horizon = 30
+    num_fcs = 1
+    # lt_params = [(3, 2)] * num_fcs
+    lt_ecdfs = [
+        [(1, 0.1), (2, 0.3), (3, 0.6), (4, 0.9), (5, 1.0)],  # ECDF for FC 1
+    ]
+    forecast_horizon = 100
     reset_count = 0
     # Create RP arrays (example: review every 3 days for all FCs)
-    rp_arrays = [[1 if (i + 1) % 2 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
+    rp_arrays = [[1 if (i + 1) % 1 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
     # Set the forecast (normally provided by the environment)
     mapped_demand = torch.ceil(torch.rand((num_fcs, forecast_horizon)) * 9).numpy()
 
-    seed = 43
+    seed = 161
     # Initialize
-    inventory_state = StateSpace(seed, num_fcs, lt_params, rp_arrays, forecast_horizon)
+    inventory_state = StateSpace(seed, num_fcs, lt_ecdfs, rp_arrays, forecast_horizon)
     #state = inventory_state.get_state()
 
-    fc_st_dim = inventory_state.get_state_dim() // num_fcs
-    # Simulate a few timesteps
-    for i in range(3):
-        state = reset(seed,inventory_state)
-        print(f"Current state: {state}")
-        for _ in range(forecast_horizon):
-            next_state = step(state,mapped_demand[:,_])
-            state= next_state
-        print("\n\n\n")
-        reset_count += 1
-        seed = seed + reset_count
+    # fc_st_dim = inventory_state.get_state_dim() // num_fcs
+    # # Simulate a few timesteps
+    # for i in range(100):
+    #     print(seed)
+    #     state = reset(seed,inventory_state)
+    #     # print(f"Current state: {state}")
+    #     for _ in range(forecast_horizon):
+    #         next_state = step(state,mapped_demand[:,_])
+    #         state= next_state
+    #     print("\n\n\n")
+    #     reset_count += 1
+    #     seed = seed + reset_count
 
 
     # # Initialize the StateSpace

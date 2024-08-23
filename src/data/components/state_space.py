@@ -72,11 +72,12 @@ class StateSpace:
 
         # Random initial on-hand inventory
         for fc in range(self.num_fcs):
-            for _ in range(2):  # Initialize with 2 prior random actions
+            for t in range(self.expected_lt[fc]):  # Initialize with 2 prior random actions
                 action = self.rng.integers(0, 10)
-                lt = self.sample_constrained_lead_time(fc, self.current_timestep)
+                timestamp = self.current_timestep - (self.expected_lt[fc]-t) # logic needs to be updated for review period logic
+                # timestamp + lt >= 0
+                lt = self.sample_constrained_lead_time(fc, timestamp)
                 # Any prior RP. These will get replenished based on LT
-                timestamp = self.current_timestep - self.rng.choice(list(range(0, lt)))
                 self.action_pipeline[fc].append((action, timestamp,lt))
 
     def prepare_ecdf(self, ecdf: List[Tuple[int, float]]) -> Dict[str, List[float]]:
@@ -102,7 +103,10 @@ class StateSpace:
 
     def sample_constrained_lead_time(self, fc: int, current_timestamp: int) -> int:
         if not self.action_pipeline[fc]:
-            return self.sample_lead_time(fc)
+            lt = self.sample_lead_time(fc)
+            while current_timestamp+lt< self.current_timestep:
+                 lt = self.sample_lead_time(fc)
+            return lt
 
         last_action = self.action_pipeline[fc][-1]
         last_replenishment_time = last_action[1] + last_action[2]
@@ -112,7 +116,7 @@ class StateSpace:
         max_attempts = 100  # Prevent infinite loop
         while attempts < max_attempts:
             lt = self.sample_lead_time(fc)
-            if lt >= min_lead_time and current_timestamp + lt > last_replenishment_time:
+            if lt >= min_lead_time and current_timestamp + lt >= last_replenishment_time:
                 return lt
             attempts += 1
 
@@ -259,10 +263,9 @@ def step(state,demand):
 if __name__=="__main__":
     # Initialize the StateSpace
     num_fcs = 1
+    ecdf = [(1, 0.1), (2, 0.3), (3, 0.6), (4, 0.9), (5, 1.0)]  # ECDF for FC 1
     # lt_params = [(3, 2)] * num_fcs
-    lt_ecdfs = [
-        [(1, 0.1), (2, 0.3), (3, 0.6), (4, 0.9), (5, 1.0)],  # ECDF for FC 1
-    ]
+    lt_ecdfs = [ecdf] * num_fcs
     forecast_horizon = 100
     reset_count = 0
     # Create RP arrays (example: review every 3 days for all FCs)
@@ -273,21 +276,20 @@ if __name__=="__main__":
     seed = 161
     # Initialize
     inventory_state = StateSpace(seed, num_fcs, lt_ecdfs, rp_arrays, forecast_horizon)
-    #state = inventory_state.get_state()
+    # state = inventory_state.get_state()
 
-    # fc_st_dim = inventory_state.get_state_dim() // num_fcs
-    # # Simulate a few timesteps
-    # for i in range(100):
-    #     print(seed)
-    #     state = reset(seed,inventory_state)
-    #     # print(f"Current state: {state}")
-    #     for _ in range(forecast_horizon):
-    #         next_state = step(state,mapped_demand[:,_])
-    #         state= next_state
-    #     print("\n\n\n")
-    #     reset_count += 1
-    #     seed = seed + reset_count
-
+    fc_st_dim = inventory_state.get_state_dim() // num_fcs
+    # Simulate a few timesteps
+    for i in range(100):
+        print(seed)
+        state = reset(seed, inventory_state)
+        # print(f"Current state: {state}")
+        for _ in range(forecast_horizon):
+            next_state = step(state, mapped_demand[:, _])
+            state = next_state
+        print("\n\n\n")
+        reset_count += 1
+        seed = seed + reset_count
 
     # # Initialize the StateSpace
     #     num_fcs = 1

@@ -9,9 +9,16 @@ from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig
 from lightning.pytorch.tuner import Tuner
 
-from src import gymenv   # This is important to register the environment
 
 rootutils.setup_root(__file__, dotenv=True, pythonpath=True)
+
+from src import gymenv   # This is important to register the environment
+import warnings
+
+# Suppress specific UserWarnings related to DataLoader
+warnings.filterwarnings("ignore", category=UserWarning, message=".*does not have many workers.*")
+
+
 # ------------------------------------------------------------------------------------ #
 # the setup_root above is equivalent to:
 # - adding project root dir to PYTHONPATH
@@ -82,6 +89,8 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         #tuner.scale_batch_size(model, mode="binsearch")
         print("Tuned Learning Rate is :",model.hparams.lr)
         #print("Tuned Batch Size is :", model.hparams.batch_size)
+        model.env.reset()
+        model.agent.reset()
 
     object_dict = {
         "cfg": cfg,
@@ -99,6 +108,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("train"):
         log.info("Starting training!")
         trainer.fit(model=model, ckpt_path=cfg.get("ckpt_path"))
+        trainer.save_checkpoint("correct_3fc_ss.ckpt")
 
     train_metrics = trainer.callback_metrics
 

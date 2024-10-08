@@ -13,7 +13,7 @@ from src.gymenv.custom_env import MultiFCEnvironment
 # )
 
 register(
-    id='MultiFC-v0',
+    id='MultiFC_OT-v0',
     entry_point='src.gymenv.multi_env:MultiFCEnvironment',
     kwargs={}
 )

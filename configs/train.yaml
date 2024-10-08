@@ -1,13 +1,12 @@
 # @package _global_
-
 # specify here default configuration
 # order of defaults determines the order in which configs override each other
 defaults:
   - _self_
 #  - data: rl_data
-  - model: RL_inv
+  - model: Multi_FC_OT
   - callbacks: default
-  - logger: wandb # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
+  - logger: tensorboard # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
   - trainer: default
   - paths: default
   - extras: default
@@ -28,10 +27,10 @@ defaults:
   - debug: null
 
 
-batch_size : 150
-auto_tune : False
-
-
+batch_size : 256
+auto_tune : True
+item_nbr: 873764
+num_fcs: 3
 # task name, determines output directory path
 task_name: "train"
 
@@ -48,8 +47,15 @@ train: True
 test: False
 
 # simply provide checkpoint path to resume training
-ckpt_path: null
+ckpt_path: null #Latest run${paths.output_dir}/checkpoints
 
 # seed for random number generators in pytorch, numpy and python.random
 seed: 3407
+
+
+
+
+
+
+
 

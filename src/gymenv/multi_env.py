@@ -200,7 +200,8 @@ class MultiFCEnvironment(gym.Env):
 
         self.inventory_state.update(sales=sales_at_FC.flatten(),
                                     actions=action.flatten(),
-                                    multiplier=multiplier.flatten())
+                                    multiplier=multiplier.flatten(),
+                                    repl_received= repl_received.flatten())
 
         self.state, self.multiplier = self.inventory_state.get_state()
 

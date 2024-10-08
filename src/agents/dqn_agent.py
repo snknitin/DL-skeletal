@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from src.data.components.replay_buffer import Experience, ReplayBuffer
 from src.gymenv import MultiFCEnvironment
 from src.models.components.dqn_nn import BranchDuelingDQN, BranchDuelingDQNMulti
-from src.gymenv.single_env import SingleFCEnvironment
+# from src.gymenv.single_env import SingleFCEnvironment
 from torchmetrics import MaxMetric, MeanMetric, SumMetric
 from src.data.rl_datamodule import RLDataset
 
@@ -26,24 +26,30 @@ class Agent:
     def __init__(self, env: gym.Env, buffer: ReplayBuffer, seed: int,agent_config: dict) -> None:
         self.env = env
         self.seed = seed
+        torch.manual_seed(seed)
+
         self.replay_buffer = buffer
-        self.action_low = agent_config['action_low']
-        self.action_high = agent_config['action_high']
-        self.action_segment = agent_config['action_segment']
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("Agent device is ", self.device)
+
+        self.action_low = torch.tensor(agent_config['action_low'], device=self.device)
+        self.action_high = torch.tensor(agent_config['action_high'], device=self.device)
+        self.action_segment = torch.tensor(agent_config['action_segment'], device=self.device)
         self.act_dim = agent_config['act_dim']
         self.sub_act_dim = agent_config['sub_act_dim']
+
         self.reset()
         self.state = self.env.reset(seed=self.seed)
 
-    def process_state(self, state):
-        if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
-            return state[0]
-        else:
-            return state
+    # def process_state(self, state):
+    #     if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
+    #         return state[0]
+    #     else:
+    #         return state
 
     def reset(self) -> None:
         """ Resents the environment and updates the state"""
-        self.state = self.process_state(self.env.reset(seed=self.seed))
+        self.state = self.env.reset(seed=self.seed)
 
     def get_action(self, net: nn.Module, epsilon: float, device: str) -> int:
         """
@@ -56,22 +62,21 @@ class Agent:
         Returns:
             action
         """
-        if np.random.random() < epsilon:
-            # action = self.env.action_space.sample()
-            idx_l = np.zeros(self.act_dim)
-            idx_h = np.array([self.sub_act_dim] * self.act_dim)
-            action = np.random.randint(idx_l, idx_h)
-            action = action.flatten()
+        if torch.rand(1).item() < epsilon:
+            env_sampled = self.env.action_space.sample()
+            num_fcs = env_sampled.shape[0]
+            action = torch.randint(0, self.sub_act_dim, (num_fcs,), device=self.device)
         else:
-            # state = self.process_state(self.state)
-            state = torch.tensor(self.state, dtype=torch.float32,device=device).unsqueeze(0)
-            q_values = net(state).squeeze(0)
-            action = q_values.argmax(dim=-1).numpy()
+            with torch.no_grad():
+                state = self.state.unsqueeze(0)
+                # state = torch.tensor(self.state, dtype=torch.float32,device=self.device).unsqueeze(0)
+                q_values = net(state).squeeze(0)
+                action = q_values.argmax(dim=-1)
 
         return action
 
     @torch.no_grad()
-    def play_step(self, net: nn.Module, epsilon: float = 0.0, device: str = 'cpu'): # -> Tuple[float, bool]:
+    def play_step(self, net: nn.Module, epsilon: float = 0.0, device: str = 'cpu') -> object: # -> Tuple[float, bool]:
         """
         Carries out a single interaction step between the agent and the environment
         Args:
@@ -82,20 +87,18 @@ class Agent:
             reward, done
         """
 
-        action = self.get_action(net, epsilon, device)
-        action1 = (self.action_low + action * self.action_segment).astype(float)
+        action = self.get_action(net, epsilon, self.device)
+        action1 = self.action_low + action * self.action_segment
 
-        new_state, reward, done, info = self.env.step(action1)
+        next_state, reward, done, info = self.env.step(action1)
 
         # Process states
-        state = np.array(self.process_state(self.state))
-        new_state = np.array(self.process_state(new_state))
-
-        exp = Experience(state, action, reward, done, new_state)
+        state = self.state
+        exp = Experience(state, action, reward, done, next_state)
 
         self.replay_buffer.append(exp)
 
-        self.state = new_state
+        self.state = next_state
         if done:
             self.reset()
         return reward, done, info
@@ -109,8 +112,8 @@ if __name__=="__main__":
     # agent_cfg = omegaconf.OmegaConf.load(root / "configs" / "agent" / "agent.yaml")
     # agent_cfg.env.env_cfg.data_dir = data_dir
     # agent = hydra.utils.instantiate(agent_cfg)
-
-    buffer = ReplayBuffer(1000)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    buffer = ReplayBuffer(1000, device)
     seed = 3407
 
     env_id= 'MultiFC_OT-v0'
@@ -126,6 +129,13 @@ if __name__=="__main__":
     "forecast_horizon": 100,
     "starting_week": 12351}
 
+    agent_config = {
+    "action_low": 0,
+    "action_high": 3,
+    "action_segment": 0.15,
+    "act_dim": 3,
+    "sub_act_dim": 20}
+
     num_fcs = env_cfg.get("num_fcs",16)
     # ecdf = [(1, 0.1), (2, 0.3), (3, 0.6), (4, 0.9), (5, 1.0)]  # ECDF for FC 1
     # # lt_params = [(3, 2)] * num_fcs
@@ -136,13 +146,13 @@ if __name__=="__main__":
     net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=num_fcs)
     target_net = BranchDuelingDQNMulti(obs_size=obs_size,n_actions=20,num_fcs=num_fcs)
 
-    agent = Agent(env,buffer,seed)
+    agent = Agent(env,buffer,seed,agent_config)
 
 
     steps = 1000
     for i in range(steps):
         # print("step",i)
-        agent.play_step(net, epsilon=0.5)
+        agent.play_step(net, epsilon=0.5, device = device)
 
 
     #print(agent)
@@ -165,24 +175,24 @@ if __name__=="__main__":
 
         # Select the Q values for the actions taken
         # Since we only have 1 action outputed we only have 1 q value - change action_dim to 20
-        current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)  # Shape: (150, 1)
+        current_q_values = current_q_values.gather(2, actions.unsqueeze(-1)).squeeze(-1)  # Shape: (batch_size, num_fcs)
         # Compute target Q values
         with torch.no_grad():
             next_q_values = target_net(next_states).max(dim=-1)[0]
             next_q_values[dones] = 0.0
 
             # # For Vector Reward: ===========================================================
-            # next_q_values = next_q_values.detach() # Shape: (batch_size, num_fcs)
-            # target_q_values = rewards + 0.99 * next_q_values # Shape: (batch_size, num_fcs)
+            next_q_values = next_q_values.detach() # Shape: (batch_size, num_fcs)
+            target_q_values = rewards.unsqueeze(1) + 0.99 * next_q_values # Shape: (batch_size, num_fcs)
             ##-------------------------------------------------------------------------------
             # For Scalar Reward
-            next_q_values = next_q_values.detach().mean(1) # Shape: (batch_size)
-            target_q_values = rewards + 0.99 * next_q_values # Shape: (batch_size)
-            target_q_values = target_q_values.unsqueeze(1).repeat(1, num_fcs) # Shape: (batch_size, num_fcs)
+            # next_q_values = next_q_values.detach().mean(1) # Shape: (batch_size)
+            # target_q_values = rewards + 0.99 * next_q_values # Shape: (batch_size)
+            # target_q_values = target_q_values.unsqueeze(1).repeat(1, num_fcs) # Shape: (batch_size, num_fcs)
             ## ================================================================================
 
         loss = nn.MSELoss()(current_q_values, target_q_values)
         train_loss(loss.item())
-        # print(loss)
+        print(loss)
 
     print(train_loss.compute())

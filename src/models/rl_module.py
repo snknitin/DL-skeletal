@@ -13,6 +13,8 @@ from src.agents.dqn_agent import Agent
 from src.data.rl_datamodule import RLDataModule, RLDataset
 from collections import OrderedDict
 from src.models.components.dqn_nn import DQN
+from src.data.components.replay_buffer import Experience, ReplayBuffer
+
 from torchmetrics import MaxMetric, MeanMetric, SumMetric
 
 from src import gymenv  # this is enough to register the environment
@@ -22,8 +24,8 @@ from src import gymenv  # this is enough to register the environment
 class DQNLightning(pl.LightningModule):
     """ Basic DQN Model """
 
-    def __init__(self, env: str, seed: int, num_fcs: int, net: DQN, target_net: DQN, buffer, optimizer,
-                 eps_start: float, eps_end: float, eps_last_frame: int,
+    def __init__(self, env: str, seed: int, num_fcs: int, net: DQN, target_net: DQN, optimizer,
+                 eps_start: float, eps_end: float, eps_last_frame: int, capacity: int,
                  sync_rate: int, lr: float, log_fc_metrics: bool, agent_config: dict, gamma: float,
                  warm_start_steps: int,
                  dataset_sample_size: int, batch_size: int) -> None:
@@ -49,7 +51,7 @@ class DQNLightning(pl.LightningModule):
         # self.save_hyperparameters(ignore=['net','target_net'])
 
 
-        self.buffer = self.hparams.buffer
+        self.buffer = ReplayBuffer(self.hparams.capacity,self.device)
         self.agent = Agent(self.env, self.buffer, self.hparams.seed, self.hparams.agent_config)
         self.populate(self.hparams.warm_start_steps)
 
@@ -137,17 +139,16 @@ class DQNLightning(pl.LightningModule):
             next_q_values = self.target_net(next_states).max(dim=-1)[0]
             next_q_values[dones] = 0.0
 
-            ## For Vector Reward: ===========================================
             # next_q_values = next_q_values.detach() # Shape: (batch_size, num_fcs)
-            # target_q_values = rewards + self.hparams.gamma * next_q_values # Shape: (batch_size, num_fcs)
+            # target_q_values = rewards.unsqueeze(1) + self.hparams.gamma * next_q_values # Shape: (batch_size, num_fcs)
 
-            ## For Scalar Reward: ===========================================
+            # ## For Scalar Reward: ===========================================
             next_q_values = next_q_values.detach().mean(1)  # Shape: (batch_size)
             target_q_values = rewards + self.hparams.gamma * next_q_values  # Shape: (batch_size)
             target_q_values = target_q_values.unsqueeze(1).repeat(1, self.num_fcs)  # Shape: (batch_size, num_fcs)
-            ## ==============================================================
+            # ## ==============================================================
 
-        return nn.MSELoss()(current_q_values.squeeze(), target_q_values)
+        return nn.MSELoss()(current_q_values, target_q_values)
 
     def on_train_start(self):
         # To ensure every run is proper from start to finish and not mid-way from populate buffer
@@ -352,7 +353,31 @@ class DQNLightning(pl.LightningModule):
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, self.trainer.max_epochs, 0)
         return [optimizer], [lr_scheduler]
 
-
+    # def test_step(self, batch, batch_idx):
+    #     self.net.eval()
+    #     total_steps = 60  # test data size = 60 days
+    #     state = self.env.reset(options={'test': True})
+    #     self.agent.state = state  # Update agent's state
+    #
+    #     for i in range(total_steps):
+    #         reward, done, info = self.agent.play_step(self.net, epsilon=0, device=self.device)
+    #
+    #         # Log metrics
+    #         self.log("test/inv_after_replen", sum(info['inv_after_replen']), on_step=False, on_epoch=True)
+    #         self.log("test/mapped_dem", sum(info['mapped_dem']), on_step=False, on_epoch=True)
+    #         self.log("test/inv_at_end_of_day", sum(info['inv_at_end_of_day']), on_step=False, on_epoch=True)
+    #
+    #         for fc in range(self.num_fcs):
+    #             self.log(f"test/fc_{fc}/inv_after_replen", info['inv_after_replen'][fc], on_step=False, on_epoch=True)
+    #             self.log(f"test/fc_{fc}/shortage_cost", info['shortage_cost'][fc], on_step=False, on_epoch=True)
+    #             self.log(f"test/fc_{fc}/holding_cost", info['holding_cost'][fc],on_step=False, on_epoch=True)
+    #             self.log(f"test/fc_{fc}/mapped_dem", info['mapped_dem'][fc], on_step=False, on_epoch=True)
+    #
+    #
+    #         if done:
+    #             break
+    #
+    #     return None
 
 
     def _dataloader(self) -> DataLoader:
@@ -422,4 +447,4 @@ if __name__=="__main__":
 
 
     # trainer.fit(model)
-    # trainer.save_checkpoint("example.ckpt")
+    # train

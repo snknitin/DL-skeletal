@@ -52,9 +52,9 @@ env:
 
 seed: ${seed}
 
-buffer:
-  _target_: src.data.components.replay_buffer.ReplayBuffer
-  capacity: 1_000_000 # size of the buffer
+#buffer:
+#  _target_: src.data.components.replay_buffer.ReplayBuffer
+#  capacity: 1_000_000 # size of the buffer
 
 agent_config:
   action_low: 0
@@ -63,11 +63,12 @@ agent_config:
   act_dim: 3
   sub_act_dim: 20
 
+capacity: 1_000_000 # size of the buffer
 warm_start_steps: 10_000
 dataset_sample_size: 256
 
 # Agent
-eps_start: 1
+eps_start: 1.0
 eps_end: 0.01
 eps_last_frame: 43_500
 

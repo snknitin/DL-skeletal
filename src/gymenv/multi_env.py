@@ -68,7 +68,7 @@ class MultiFCEnvironment(gym.Env):
         self.LT_dist_data_table = pd.read_pickle(self.data_dir / 'LT_dist_data_table.pkl')
         self.pl_ratio_table = pd.read_pickle(self.data_dir / 'placement_ratio_tables.pkl')
         # self.cost_data = pd.read_pickle(self.data_dir / 'cost_data_table.pkl') #Computed using Min-Max over benefits data table
-        with open(self.data_dir / 'lt_fc_ecdfs_det.pkl', 'rb') as f:
+        with open(self.data_dir / 'lt_fc_ecdfs.pkl', 'rb') as f:
             self.fc_leadtimes = pickle.load(f)
         self.sales_table = pd.read_pickle(self.data_dir / 'Prod_Sales_tables.pkl')
         self.dem_ref = self.generate_demand_data()  # (266,59) wm_wk, 58 geos

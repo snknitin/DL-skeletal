@@ -4,7 +4,7 @@ from gym.envs.registration import register
 # Register the environment
 from gym.envs.registration import register
 # from src.gymenv.single_env import SingleFCEnvironment
-from src.gymenv.custom_env import MultiFCEnvironment
+from src.gymenv.multi_env import MultiFCEnvironment
 
 # register(
 #     id='SingleFC-v0',

@@ -24,19 +24,14 @@ torch.backends.cudnn.benchmark = False
 class StateSpace:
     def __init__(self, seed: int, num_fcs: int, lt_ecdfs: List[List[Tuple[int, float]]], rp_arrays: List[List[int]], forecast_horizon: int):
         # seed setting in state space
-        # self.rng = np.random.default_rng(seed)  # Create a separate RNG
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print("State space device is ",self.device)
-        # self.rng = torch.manual_seed(seed)
-
-        self.rng = torch.Generator(device=self.device).manual_seed(seed)
+        self.rng = torch.Generator().manual_seed(seed)
 
 
         self.num_fcs = num_fcs
         self.lt_ecdfs = [self.prepare_ecdf(ecdf) for ecdf in lt_ecdfs]
         self.expected_lt = [self.calculate_expected_lt(ecdf) for ecdf in self.lt_ecdfs]
         self.pipeline_start_idx = max(self.expected_lt)
-        self.rp_arrays = torch.tensor(rp_arrays, dtype=torch.int32, device=self.device)
+        self.rp_arrays = torch.tensor(rp_arrays, dtype=torch.int32)
         self.forecast_horizon = forecast_horizon
 
         assert self.rp_arrays.shape == (num_fcs, forecast_horizon), "RP arrays shape mismatch"
@@ -47,16 +42,16 @@ class StateSpace:
         self.max_lt = int(max(param[0] for param in lt_ecdfs[0]))  # Approximate max LT
         self.lbw = 2  # Look back window for x timesteps -> Make corresponding changes in get_state_dim and obs_size in Multi_FC_OT
         self.max_pending_actions = 5
-        self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32,device=self.device)
-        self.action_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32,device=self.device)
-        self.multiplier_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32,device=self.device)
+        self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
+        self.action_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
+        self.multiplier_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
 
         # Making sure to replicate the situation where there were prior actions before S0 to get action_pipeline
 
 
         # Random initial sales when env is reset for prior timesteps
         # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
-        self.sales_history[:, -self.max_lt:] = torch.randint(0, 20, (self.num_fcs, self.max_lt),device=self.device)
+        self.sales_history[:, -self.max_lt:] = torch.randint(0, 20, (self.num_fcs, self.max_lt))
 
 
         self.zero_state()
@@ -68,7 +63,7 @@ class StateSpace:
     def set_seed(self, seed: int):
         """Set a new seed for the random number generator"""
         # self.rng = np.random.default_rng(seed)
-        self.rng = torch.Generator(device=self.device).manual_seed(seed)
+        self.rng = torch.Generator().manual_seed(seed)
 
     def reinitialize(self):
         """Reinitialize the state with the current RNG"""
@@ -81,18 +76,18 @@ class StateSpace:
         """
         self.current_timestep = 0
         # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
-        self.on_hand = torch.randint(0, 100, (self.num_fcs,), device=self.device).float()
+        self.on_hand = torch.randint(0, 100, (self.num_fcs,)).float()
 
         # Vectorized action pipeline
-        self.action_pipeline = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx, 4), device=self.device)
+        self.action_pipeline = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx, 4))
         # To figure out the in-transit vs executed
-        self.pipeline_mask = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx), dtype=torch.bool, device=self.device)
+        self.pipeline_mask = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx), dtype=torch.bool)
 
         # Random initial on-hand inventory
         for fc in range(self.num_fcs):
             for t in range(self.expected_lt[fc]):  # Initialize with 2 prior random actions
             # for t in range(self.lbw):
-                action = torch.randint(0, 3, (1,), device=self.device).item()
+                action = torch.randint(0, 3, (1,)).item()
                 self.action_history[:, -1] = action
                 timestamp = self.current_timestep - (self.expected_lt[fc]-t) # logic needs to be updated for review period logic
                 lt = self.sample_lead_time(fc)
@@ -106,7 +101,7 @@ class StateSpace:
 
                 # Use t as the index directly, no offset needed here
                 idx = t
-                self.action_pipeline[fc, idx] = torch.tensor([action, timestamp, lt, multiplier], device=self.device)
+                self.action_pipeline[fc, idx] = torch.tensor([action, timestamp, lt, multiplier])
                 self.pipeline_mask[fc, idx] = True
 
                 self.action_history[fc, -1] = action
@@ -118,13 +113,13 @@ class StateSpace:
     def prepare_ecdf(self, ecdf: List[Tuple[int, float]]) -> dict[str, Tensor]:
         lt_values, probabilities = zip(*sorted(ecdf))
         return {
-            'lt_values': torch.tensor(lt_values, dtype=torch.float32, device=self.device),
-            'cum_probabilities': torch.tensor(probabilities, dtype=torch.float32, device=self.device)
+            'lt_values': torch.tensor(lt_values, dtype=torch.float32),
+            'cum_probabilities': torch.tensor(probabilities, dtype=torch.float32)
         }
 
     def sample_lead_time(self, fc: int) -> int:
         ecdf = self.lt_ecdfs[fc]
-        r = torch.rand(1, device = self.device,generator=self.rng).item()
+        r = torch.rand(1,generator=self.rng).item()
         idx = torch.searchsorted(ecdf['cum_probabilities'], r).item()
         return ecdf['lt_values'][idx].item()
 
@@ -133,7 +128,7 @@ class StateSpace:
         # probabilities = [ecdf['cum_probabilities'][0]] + [
         #     ecdf['cum_probabilities'][i] - ecdf['cum_probabilities'][i - 1] for i in
         #     range(1, len(ecdf['cum_probabilities']))]
-        probabilities = torch.diff(ecdf['cum_probabilities'], prepend=torch.tensor([0.0], device=self.device))
+        probabilities = torch.diff(ecdf['cum_probabilities'], prepend=torch.tensor([0.0]))
         expected_lt = torch.sum(lt_values * probabilities)
         # expected_lt = sum(lt * prob for lt, prob in zip(lt_values, probabilities))
         return round(expected_lt.item())
@@ -172,10 +167,6 @@ class StateSpace:
     def update(self, sales: torch.Tensor, actions: torch.Tensor, multiplier:torch.Tensor, repl_received: torch.Tensor):
         """Update the state with new sales and actions."""
         assert sales.shape == actions.shape == (self.num_fcs,)
-        # sales = sales.to(self.device)
-        # actions = actions.to(self.device)
-        # multiplier = multiplier.to(self.device)
-
 
 
         # Update histories
@@ -213,7 +204,7 @@ class StateSpace:
                 lt = self.sample_lead_time(fc)
                 # empty_slot = (~self.pipeline_mask[fc]).nonzero(as_tuple=True)[0][0]
                 self.action_pipeline[fc, adjusted_timestep] = torch.tensor(
-                    [actions[fc].item(),self.current_timestep, lt, multiplier[fc].item()], device=self.device)
+                    [actions[fc].item(),self.current_timestep, lt, multiplier[fc].item()])
                 self.pipeline_mask[fc, adjusted_timestep] = True
                 # lt = self.sample_constrained_lead_time(fc, self.current_timestep)
                 # print("Updates")
@@ -284,7 +275,7 @@ class StateSpace:
             # Get pending actions
             pending_actions = self.action_pipeline[fc, future_mask, 0] * self.action_pipeline[fc, future_mask, 3]
             # Pad or truncate to fixed size
-            pending_actions_fixed = torch.zeros(self.max_pending_actions, device=self.device)
+            pending_actions_fixed = torch.zeros(self.max_pending_actions)
             pending_actions_fixed[:pending_actions.shape[0]] = pending_actions[:self.max_pending_actions] # 3 vs 5
 
             # act_hist = list(self.action_history[fc, -(self.lbw):])
@@ -295,23 +286,23 @@ class StateSpace:
             fc_multiplier = int(rs_avg.item())  # self.forecast[fc, cp_start:cp_end].mean()
             # multip = list(self.multiplier_history[fc, -(self.lbw):])
 
-            multip = torch.zeros(self.max_pending_actions, device=self.device)
+            multip = torch.zeros(self.max_pending_actions)
             multip[:pending_actions.shape[0]] = self.action_pipeline[fc, future_mask, 3][:self.max_pending_actions]
 
             # previous state space - oh_curr, action_pipeline, repl_received, oh_repl, dem_cp, dem_lt, rs_lt , days_left
             #
             # print(f"FC {fc}: oh_curr = {oh_curr}, oh_repl = {oh_repl}, repl_received = {repl_received}, fc_multiplier = {fc_multiplier}, dem_lt:{dem_lt}, dem_cp:{dem_cp}")
-            # fc_state = torch.tensor([oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt] +act_hist+ multip+ rs_lt, dtype=torch.float32, device=self.device)
+            # fc_state = torch.tensor([oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt] +act_hist+ multip+ rs_lt, dtype=torch.float32)
             fc_state = torch.cat([
-                torch.tensor([oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt], device=self.device),
+                torch.tensor([oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt]),
                 pending_actions_fixed,
                 multip,
                 # masked_act_hist,
-                torch.tensor(rs_lt,device=self.device),
+                torch.tensor(rs_lt),
             ])
             states.append(fc_state)
             multipliers.append(fc_multiplier)
-        return torch.cat(states), torch.tensor(multipliers, device=self.device)  #states #torch.cat(states)
+        return torch.cat(states), torch.tensor(multipliers)  #states #torch.cat(states)
 
     def get_state_dim(self) -> int:
         """Return the dimension of the state vector."""
@@ -364,7 +355,6 @@ if __name__=="__main__":
     with open(data_dir / 'lt_fc_ecdfs.pkl', 'rb') as f:
         fc_leadtimes = pickle.load(f)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     sel_fcs = [4270, 6284, 6753]
     lt_ecdfs = [fc_leadtimes.get(fc_id) for fc_id in sel_fcs]
@@ -376,10 +366,10 @@ if __name__=="__main__":
     # Create RP arrays (example: review every 3 days for all FCs)
     rp_arrays = [[1 if (i + 1) % 1 == 0 else 0 for i in range(forecast_horizon)] for _ in range(num_fcs)]
     # Set the forecast (normally provided by the environment)
-    rng = torch.Generator(device=device).manual_seed(seed)
+    rng = torch.Generator().manual_seed(seed)
     # mapped_demand = torch.ceil(rng.rand((num_fcs, forecast_horizon),device = device) * 9)
-    mapped_demand = torch.randint(0, 25, size=(num_fcs, forecast_horizon),generator=rng, device=device)
-    forecast = torch.randint(0, 25, size=(num_fcs, forecast_horizon),generator=rng, device=device)
+    mapped_demand = torch.randint(0, 25, size=(num_fcs, forecast_horizon),generator=rng)
+    forecast = torch.randint(0, 25, size=(num_fcs, forecast_horizon),generator=rng)
 
     # forecast = torch.ceil(torch.rand((num_fcs, forecast_horizon)) * 10)  # Random forecast for demonstration
 

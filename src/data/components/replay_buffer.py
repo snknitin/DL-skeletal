@@ -11,8 +11,7 @@ class ReplayBuffer:
         capacity: size of the buffer
     """
 
-    def __init__(self, capacity: int,device='cpu') -> None:
-        self.device = device
+    def __init__(self, capacity: int) -> None:
         self.buffer = collections.deque(maxlen=capacity)
 
     def __len__(self) -> None:
@@ -32,10 +31,10 @@ class ReplayBuffer:
         batch = [self.buffer[idx] for idx in indices]
         states, actions, rewards, dones, next_states = zip(*batch)
 
-        states = torch.stack(states).to(self.device)
-        actions = torch.stack(actions).to(self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device)
-        dones = torch.tensor(dones, dtype=torch.bool).to(self.device)
-        next_states = torch.stack(next_states).to(self.device)
+        states = torch.stack(states)
+        actions = torch.stack(actions)
+        rewards = torch.tensor(rewards, dtype=torch.float32)
+        dones = torch.tensor(dones, dtype=torch.bool)
+        next_states = torch.stack(next_states)
 
         return states, actions, rewards, dones, next_states

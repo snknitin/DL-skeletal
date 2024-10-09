@@ -7,7 +7,7 @@ max_epochs: 10000
 #max_steps: 150000
 log_every_n_steps : 100
 reload_dataloaders_every_n_epochs: 1
-accelerator: cpu
+accelerator: gpu
 # strategy: ddp_find_unused_parameters_true
 devices: 1
 

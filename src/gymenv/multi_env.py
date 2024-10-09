@@ -18,7 +18,6 @@ from sklearn.preprocessing import MinMaxScaler
 class MultiFCEnvironment(gym.Env):
     def __init__(self, env_cfg: Dict[str, Any]):
         super().__init__()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.item_nbr = env_cfg['item_nbr']
         self.data_dir = Path(env_cfg['data_dir'])
@@ -169,7 +168,6 @@ class MultiFCEnvironment(gym.Env):
     def step(self, action):
         t = self.inventory_state.get_current_time_step()
         done = bool(t == self.inventory_state.endpoint)  # Define your terminal condition
-
         # realized_demand = np.ceil(self.Exp_demand.iloc[t].values.reshape(-1, self.num_sku).astype(float))
         # curr_week_no = self.dem_ref.iloc[self.start_time_index, 0]
         # curr_pl_ratio = self.pl_ratio_table[curr_week_no]
@@ -196,7 +194,7 @@ class MultiFCEnvironment(gym.Env):
         assert mapped_demand_pr.sum() >= mapped_dem_ot.sum(), "f{t}, PR Not Equal to OT"
 
         repl_received = inventory_after_replenishment - inventory_at_beginning_of_day
-        inventory_at_end_of_day = inventory_after_replenishment.cpu() - sales_at_FC
+        inventory_at_end_of_day = inventory_after_replenishment - sales_at_FC
 
         self.inventory_state.update(sales=sales_at_FC.flatten(),
                                     actions=action.flatten(),
@@ -231,10 +229,6 @@ class MultiFCEnvironment(gym.Env):
 
     def calculate_reward(self, inventory, demand, pl_ratio):
         # Ensure all inputs are tensors on the correct device
-        inventory = inventory.to(self.device)
-        demand = demand.to(self.device)
-        pl_ratio = pl_ratio.to(self.device)
-
         mapped_demand = torch.mm(demand.T, pl_ratio)[:, :self.num_fcs]
 
         sales = torch.min(inventory, mapped_demand)
@@ -254,14 +248,14 @@ class MultiFCEnvironment(gym.Env):
 
     def calculate_reward_OT(self, inventory, realized_demand, mapped_dem_pr, benefits_data_table):
         # Move all inputs to the correct device
-        inventory = inventory.to(self.device).reshape(-1, 1)
-        realized_demand = realized_demand.to(self.device)
-        mapped_dem_pr = mapped_dem_pr.to(self.device)
-        # benefits_data_table = torch.tensor(benefits_data_table, device=self.device)
+        inventory = inventory.reshape(-1, 1)
+        realized_demand = torch.from_numpy(realized_demand)
+        mapped_dem_pr = torch.from_numpy(mapped_dem_pr)
+        # benefits_data_table = torch.tensor(benefits_data_table)
 
 
-        temp_realized_demand = torch.cat([realized_demand, torch.zeros((1, self.num_sku), device=self.device)],dim=0).int()
-        temp_inventory = torch.cat([inventory, torch.zeros((1, self.num_sku), device=self.device)], dim=0).int()
+        temp_realized_demand = torch.cat([realized_demand, torch.zeros((1, self.num_sku))],dim=0).int()
+        temp_inventory = torch.cat([inventory, torch.zeros((1, self.num_sku))], dim=0).int()
 
         demand_sums = torch.sum(temp_realized_demand[:-1, :], dim=0)
         inventory_sums = torch.sum(temp_inventory[:-1, :], dim=0)
@@ -279,12 +273,12 @@ class MultiFCEnvironment(gym.Env):
         for i in range(temp_inventory.shape[1]):
             M = np.array(benefits_data_table)
             M = 1 - self.min_max_scaler.fit_transform(M.T).T
-            M = torch.tensor(M, device=self.device)
+            M = torch.tensor(M)
 
             benefits = 1 - M
 
-            M = torch.cat([M, torch.ones((1, M.shape[1]), device=self.device) * self.sc * 5], dim=0)
-            M = torch.cat([M, torch.ones((M.shape[0], 1), device=self.device) * self.hc * 5], dim=1)
+            M = torch.cat([M, torch.ones((1, M.shape[1])) * self.sc * 5], dim=0)
+            M = torch.cat([M, torch.ones((M.shape[0], 1)) * self.hc * 5], dim=1)
 
             supply = temp_inventory[:, i].cpu().numpy()
             demand = temp_realized_demand[:, i].cpu().numpy()
@@ -292,7 +286,7 @@ class MultiFCEnvironment(gym.Env):
             uot = ot.solve(M.cpu().numpy() / M.max().item(), supply.astype('float'), demand.astype('float'),
                            method='emd')
 
-            sales_at_FC = torch.tensor(uot.plan[:-1, :-1].sum(axis=1), device=self.device)
+            sales_at_FC = torch.tensor(uot.plan[:-1, :-1].sum(axis=1))
             mapped_dem = sales_at_FC.int()
 
             # (OT) Calculate reward
@@ -303,10 +297,10 @@ class MultiFCEnvironment(gym.Env):
 
             # (PR) Calculate reward
             diff = mapped_dem_pr.flatten() - inventory.flatten()
-            holding_cost_pr = torch.where(diff > 0, torch.tensor(0., device=self.device), diff * -self.hc * 5) / M.max()
-            holding_qty_pr = torch.sum(torch.where(diff > 0, torch.tensor(0., device=self.device), -diff))
-            shortage_cost_pr = torch.where(diff > 0, diff * self.sc * 5, torch.tensor(0., device=self.device)) / M.max()
-            shortage_qty_pr = torch.sum(torch.where(diff > 0, diff, torch.tensor(0., device=self.device)))
+            holding_cost_pr = torch.where(diff > 0, torch.tensor(0.), diff * -self.hc * 5) / M.max()
+            holding_qty_pr = torch.sum(torch.where(diff > 0, torch.tensor(0.), -diff))
+            shortage_cost_pr = torch.where(diff > 0, diff * self.sc * 5, torch.tensor(0.)) / M.max()
+            shortage_qty_pr = torch.sum(torch.where(diff > 0, diff, torch.tensor(0.)))
 
             local_cost = torch.sum(shortage_cost_pr + holding_cost_pr)
             global_cost = uot.value

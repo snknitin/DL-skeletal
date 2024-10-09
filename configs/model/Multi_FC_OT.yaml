@@ -10,7 +10,7 @@ num_fcs: ${num_fcs}
 
 net:
   _target_: src.models.components.dqn_nn.BranchDuelingDQNMulti
-  obs_size: 12  # State space
+  obs_size: 18  # State space
   n_actions: 20  # Action space
   num_fcs: ${num_fcs}
   hidden_size: 256
@@ -20,7 +20,7 @@ net:
 
 target_net:
   _target_: src.models.components.dqn_nn.BranchDuelingDQNMulti
-  obs_size: 12
+  obs_size: 18
   n_actions: 20
   num_fcs: ${num_fcs}
   hidden_size: 256

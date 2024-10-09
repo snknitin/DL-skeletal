@@ -51,7 +51,7 @@ class DQNLightning(pl.LightningModule):
         # self.save_hyperparameters(ignore=['net','target_net'])
 
 
-        self.buffer = ReplayBuffer(self.hparams.capacity,self.device)
+        self.buffer = ReplayBuffer(self.hparams.capacity)
         self.agent = Agent(self.env, self.buffer, self.hparams.seed, self.hparams.agent_config)
         self.populate(self.hparams.warm_start_steps)
 
@@ -250,7 +250,9 @@ class DQNLightning(pl.LightningModule):
             self.target_net.load_state_dict(self.net.state_dict())
 
         # total_reward = torch.tensor(self.total_reward,dtype=torch.float32).to(self.device)
-        reward = torch.tensor(reward, dtype=torch.float32).to(self.device).item()
+        # reward = torch.tensor(reward, dtype=torch.float32).to(self.device).item()
+        reward = reward.clone().detach().to(self.device).item()
+
         steps = torch.tensor(self.global_step).to(self.device)
 
         log = {'loss': loss,

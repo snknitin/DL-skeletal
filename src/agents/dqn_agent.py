@@ -29,23 +29,16 @@ class Agent:
         torch.manual_seed(seed)
 
         self.replay_buffer = buffer
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print("Agent device is ", self.device)
 
-        self.action_low = torch.tensor(agent_config['action_low'], device=self.device)
-        self.action_high = torch.tensor(agent_config['action_high'], device=self.device)
-        self.action_segment = torch.tensor(agent_config['action_segment'], device=self.device)
+        self.action_low = torch.tensor(agent_config['action_low'])
+        self.action_high = torch.tensor(agent_config['action_high'])
+        self.action_segment = torch.tensor(agent_config['action_segment'])
         self.act_dim = agent_config['act_dim']
         self.sub_act_dim = agent_config['sub_act_dim']
 
         self.reset()
         self.state = self.env.reset(seed=self.seed)
 
-    # def process_state(self, state):
-    #     if isinstance(state, tuple) and len(state) == 2 and isinstance(state[1], dict):
-    #         return state[0]
-    #     else:
-    #         return state
 
     def reset(self) -> None:
         """ Resents the environment and updates the state"""
@@ -65,13 +58,13 @@ class Agent:
         if torch.rand(1).item() < epsilon:
             env_sampled = self.env.action_space.sample()
             num_fcs = env_sampled.shape[0]
-            action = torch.randint(0, self.sub_act_dim, (num_fcs,), device=self.device)
+            action = torch.randint(0, self.sub_act_dim, (num_fcs,))
         else:
             with torch.no_grad():
-                state = self.state.unsqueeze(0)
+                state = self.state.unsqueeze(0).to(device)
                 # state = torch.tensor(self.state, dtype=torch.float32,device=self.device).unsqueeze(0)
                 q_values = net(state).squeeze(0)
-                action = q_values.argmax(dim=-1)
+                action = q_values.argmax(dim=-1).cpu()
 
         return action
 
@@ -87,7 +80,7 @@ class Agent:
             reward, done
         """
 
-        action = self.get_action(net, epsilon, self.device)
+        action = self.get_action(net, epsilon,device)
         action1 = self.action_low + action * self.action_segment
 
         next_state, reward, done, info = self.env.step(action1)
@@ -112,8 +105,8 @@ if __name__=="__main__":
     # agent_cfg = omegaconf.OmegaConf.load(root / "configs" / "agent" / "agent.yaml")
     # agent_cfg.env.env_cfg.data_dir = data_dir
     # agent = hydra.utils.instantiate(agent_cfg)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    buffer = ReplayBuffer(1000, device)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    buffer = ReplayBuffer(1000)
     seed = 3407
 
     env_id= 'MultiFC_OT-v0'
@@ -152,7 +145,7 @@ if __name__=="__main__":
     steps = 1000
     for i in range(steps):
         # print("step",i)
-        agent.play_step(net, epsilon=0.5, device = device)
+        agent.play_step(net, epsilon=0.5)
 
 
     #print(agent)

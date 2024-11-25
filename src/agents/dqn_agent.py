@@ -1,3 +1,6 @@
+from collections import namedtuple
+from typing import Union
+
 import numpy as np
 import torch
 from torch import nn, optim
@@ -8,12 +11,15 @@ import lightning as pl
 import gym
 from torch.utils.data import DataLoader
 
+from src.data.components.PER_buffer import PrioritizedReplayBuffer
 from src.data.components.replay_buffer import Experience, ReplayBuffer
 from src.gymenv import MultiFCEnvironment
 from src.models.components.dqn_nn import BranchDuelingDQN, BranchDuelingDQNMulti
 # from src.gymenv.single_env import SingleFCEnvironment
 from torchmetrics import MaxMetric, MeanMetric, SumMetric
 from src.data.rl_datamodule import RLDataset
+
+
 
 class Agent:
     """
@@ -23,7 +29,7 @@ class Agent:
         buffer: replay buffer storing experiences
     """
 
-    def __init__(self, env: gym.Env, buffer: ReplayBuffer, seed: int,agent_config: dict) -> None:
+    def __init__(self, env: gym.Env, buffer: Union[ReplayBuffer, PrioritizedReplayBuffer], seed: int,agent_config: dict) -> None:
         self.env = env
         self.seed = seed
         torch.manual_seed(seed)

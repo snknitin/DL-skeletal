@@ -208,6 +208,9 @@ class MultiFCEnvironment(gym.Env):
 
         # multiplier = self.multiplier.copy().reshape(self.num_fcs,-1)
         multiplier = self.multiplier.clone().reshape(self.num_fcs, -1)
+        # Set safety_stock = Action * Multiplier
+        # dem_cp_fc = multiplier --- currently
+        # Set Repl_ord = torch.max(torch.tensor(0),  safety_stock + dem_cp_fc - proj_oh_lt_fc)
 
         reward, sales_at_FC, holding_cost_pr, shortage_cost_pr, mapped_dem_ot, holding_qty_pr, shortage_qty_pr, holding_qty_ot, shortage_qty_ot, uot_plan, x = self.calculate_reward_OT(
             inventory_after_replenishment, realized_demand, mapped_demand_pr, self.benefits_data_table,
@@ -224,7 +227,7 @@ class MultiFCEnvironment(gym.Env):
         self.inventory_state.update(sales=sales_at_FC.flatten(),
                                     actions=action.flatten(),
                                     multiplier=multiplier.flatten(),
-                                    repl_received=repl_received.flatten())
+                                    repl_received=repl_received.flatten())  # Include repl_ordered in update
 
         self.state, self.multiplier = self.inventory_state.get_state()
 
@@ -243,7 +246,7 @@ class MultiFCEnvironment(gym.Env):
             'shortage_qty_pr': shortage_qty_pr.flatten(),
             'holding_qty_ot': holding_qty_ot.flatten(),
             'shortage_qty_ot': shortage_qty_ot.flatten(),
-            'repl_ord': action.flatten() * multiplier.flatten(),
+            'repl_ord': action.flatten() * multiplier.flatten(),  # use repl_ordered calcylated above
             'action': action.flatten(),
             'multiplier': multiplier.flatten(),
             'mapped_dem': mapped_demand_pr.flatten(),

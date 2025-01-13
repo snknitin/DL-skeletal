@@ -10,8 +10,9 @@ num_fcs: ${num_fcs}
 
 net:
   _target_: src.models.components.dqn_nn.BranchDuelingDQNMulti
-  obs_size: 18  # State space
+  obs_size: 25  # State space
   n_actions: 20  # Action space
+  item_feature_size: 5 # 0 if single item, jsut comment it as it is default. else set to number of items in item_ids
   num_fcs: ${num_fcs}
   hidden_size: 256
   middle_size1: 128
@@ -20,30 +21,27 @@ net:
 
 target_net:
   _target_: src.models.components.dqn_nn.BranchDuelingDQNMulti
-  obs_size: 18
+  obs_size: 25
   n_actions: 20
+  item_feature_size: 5
   num_fcs: ${num_fcs}
   hidden_size: 256
   middle_size1: 128
   middle_size2: 64
   out_size: 32
 
-#env: CartPole-v1
 
+item_ids: ${item_ids}
 
 env:
 #  _target_: gym.make
   id: 'MultiFC_OT-v0'
   env_cfg:
-    item_nbr: ${item_nbr}
-    data_dir: ${paths.data_dir}/item_id_${item_nbr}/
-    holding_cost: 1
-    shortage_cost: 20
-#    fc_lt_mean: 5
-#    fc_lt_var: 1
-#    lt_ecdfs: [(1, 0.1), (2, 0.3), (3, 0.6), (4, 0.9), (5, 1.0)]
+    data_dir: ${paths.data_dir}/item_id_
+    holding_cost: 5 #Holding should never be less than 5
+    shortage_cost: 100
     sel_FCs: [4270, 6284, 6753]
-#    sel_FCs: [4270,  4270,  6284, 6753] #  6284,  6753,  7439, 7490,  7728,  8302]
+#    sel_FCs: [4270, 4364, 4401,6284, 6753, 7439, 7490, 7728, 8302, 8511, 28021,29821,31051,31341,38562,38631]
     num_fcs: ${num_fcs}
     num_sku: 1
     forecast_horizon: 100
@@ -52,15 +50,20 @@ env:
 
 seed: ${seed}
 
-#buffer:
-#  _target_: src.data.components.replay_buffer.ReplayBuffer
-#  capacity: 1_000_000 # size of the buffer
+
+buffer_type: ${buffer_type}
+per_params:  # Only used if buffer_type is "prioritized"
+  alpha: 0.6
+  beta: 0.4
+  beta_increment: 0.001
+  epsilon: 1e-6
+
 
 agent_config:
   action_low: 0
-  action_high: 3
-  action_segment: 0.15
-  act_dim: 3
+  action_high: 5
+  action_segment: 0.25
+  act_dim: 3 # This is not used in current code (used in earlier code)
   sub_act_dim: 20
 
 capacity: 1_000_000 # size of the buffer
@@ -70,11 +73,11 @@ dataset_sample_size: 256
 # Agent
 eps_start: 1.0
 eps_end: 0.01
-eps_last_frame: 43_500
+eps_last_frame: 43500
 
 
 sync_rate: 300
 lr: 0.007378528457548085
 gamma: 0.9
 batch_size: ${batch_size}
-log_fc_metrics: False
+log_fc_metrics: True

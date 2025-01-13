@@ -18,7 +18,8 @@ import warnings
 # Suppress specific UserWarnings related to DataLoader
 warnings.filterwarnings("ignore", category=UserWarning, message=".*does not have many workers.*")
 
-
+### Customised Policy Testing
+from policy_test2 import *
 # ------------------------------------------------------------------------------------ #
 # the setup_root above is equivalent to:
 # - adding project root dir to PYTHONPATH
@@ -89,7 +90,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         #tuner.scale_batch_size(model, mode="binsearch")
         print("Tuned Learning Rate is :",model.hparams.lr)
         #print("Tuned Batch Size is :", model.hparams.batch_size)
-        model.env.reset()
+        # model.env.reset()
         model.agent.reset()
 
     object_dict = {
@@ -108,7 +109,11 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("train"):
         log.info("Starting training!")
         trainer.fit(model=model, ckpt_path=cfg.get("ckpt_path"))
-        trainer.save_checkpoint("correct_3fc_ss.ckpt")
+        num_items = len(cfg.get('item_ids'))
+        checkpoint_path = (f"{cfg.paths.output_dir}/checkpoints_{num_items}items_{cfg.get('num_fcs')}FCs/final_model.ckpt")
+        object_dict['checkpoint_path'] = checkpoint_path
+        trainer.save_checkpoint(checkpoint_path)
+        log.info(f"Final model saved to {checkpoint_path}")
 
     train_metrics = trainer.callback_metrics
 
@@ -118,7 +123,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if ckpt_path == "":
             log.warning("Best ckpt not found! Using current weights for testing...")
             ckpt_path = None
-        trainer.test(model=model, ckpt_path=ckpt_path)
+        trainer.test(model=model, ckpt_path=checkpoint_path)
         log.info(f"Best ckpt path: {ckpt_path}")
 
     print("Tuned Learning Rate was :", model.hparams.lr)

@@ -70,7 +70,7 @@ class DQNLightning(pl.LightningModule):
             agent_config=self.hparams.agent_config
         )
 
-        print(f"Initialized Multi-Item, Multi-FC Agent for {len(self.item_ids)} items and {len(self.num_fcs)} FCs" )
+        print(f"Initialized Multi-Item, Multi-FC Agent for {len(self.item_ids)} items and {self.num_fcs} FCs" )
         # Moved this into the multiagent class
         # Need to set these seeds too
         # self.env.action_space.seed(self.hparams.seed)
@@ -188,7 +188,8 @@ class DQNLightning(pl.LightningModule):
             # Compute target Q values
             with torch.no_grad():
                 next_q_values = self.target_net(next_states).max(dim=-1)[0]
-                next_q_values[dones] = 0.0
+                #Karthik - Commenting the line below to NOT set the next_q_values to 0 at the end of episode
+                #next_q_values[dones] = 0.0
 
                 # next_q_values = next_q_values.detach() # Shape: (batch_size, num_fcs)
                 # target_q_values = rewards.unsqueeze(1) + self.hparams.gamma * next_q_values # Shape: (batch_size, num_fcs)
@@ -204,7 +205,9 @@ class DQNLightning(pl.LightningModule):
 
     def on_train_start(self):
         # To ensure every run is proper from start to finish and not mid-way from populate buffer
-        self.env.reset()
+        # self.env.reset()
+        self.agent.reset()
+
         # Reset metrics for next episode
 
         self.train_loss.reset()
@@ -252,7 +255,7 @@ class DQNLightning(pl.LightningModule):
         epsilon = max(self.hparams.eps_end, (self.hparams.eps_start - self.hparams.eps_end) * math.exp(-1. * (self.global_step + 1) / self.hparams.eps_last_frame))
 
         # step through environment with agent
-        reward_vec, done, info = self.agent.play_step(self.net, epsilon, self.device)
+        reward_vec, done, info_dict = self.agent.play_step(self.net, epsilon, self.device)
         reward = reward_vec.sum()  # Only for plotting
 
 
@@ -266,38 +269,19 @@ class DQNLightning(pl.LightningModule):
         self.cumulative_step_reward += reward.item()
         self.episode_reward(reward)
         self.avg_episodic_reward(reward)
+        # Update metrics
+        self.episode_length(1)  # Increment by 1 for each step
+
+        self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/epsilon", epsilon, on_step=False, on_epoch=True, prog_bar=False)
+        self.log("train/cumulative_step_reward", self.cumulative_step_reward, on_step=False, on_epoch=True)
 
         # Log moving averages
         window_size = min(5, len(self.episode_rewards))
         mavg_reward = sum(self.episode_rewards[-window_size:]) / window_size
         cumulative_episode_reward = sum(self.episode_rewards)
-
-        # Update per-FC metrics
-        for fc in range(self.num_fcs):
-            # self.fc_rewards_avg[fc](reward_vec[fc])
-            self.fc_holding_costs_pr_avg[fc](info['holding_qty_pr'][fc])
-            self.fc_shortage_costs_pr_avg[fc](info['shortage_qty_pr'][fc])
-            # self.fc_rewards_sum[fc](reward_vec[fc])
-            self.fc_holding_costs_pr_sum[fc](info['holding_qty_pr'][fc])
-            self.fc_shortage_costs_pr_sum[fc](info['shortage_qty_pr'][fc])
-
-        self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train/epsilon", epsilon, on_step=False, on_epoch=True, prog_bar=False)
-
-        self.log("train/cumulative_step_reward", self.cumulative_step_reward, on_step=False, on_epoch=True)
         self.log("train/cumulative_episodic_reward", cumulative_episode_reward, on_step=False, on_epoch=True)
         self.log("train/Moving_avg_5_ep_reward", mavg_reward, on_step=False, on_epoch=True)
-
-        # Update metrics
-        self.episode_length(1)  # Increment by 1 for each step
-        # Update metrics summed over multi-fcs
-        self.avg_holding_qty_ot(info['holding_qty_ot'].sum())
-        self.total_holding_cost_ot(info['holding_qty_ot'].sum())
-        self.avg_shortage_cost_ot(info['shortage_qty_ot'].sum())
-        self.total_shortage_cost_ot(info['shortage_qty_ot'].sum())
-
-        # if self.trainer.use_dp or self.trainer.use_ddp2:
-        #     loss = loss.unsqueeze(0)
 
         # Soft update of target network
         if self.global_step % self.hparams.sync_rate == 0:
@@ -305,6 +289,10 @@ class DQNLightning(pl.LightningModule):
 
         # total_reward = torch.tensor(self.total_reward,dtype=torch.float32).to(self.device)
         # reward = torch.tensor(reward, dtype=torch.float32).to(self.device).item()
+        # if self.trainer.use_dp or self.trainer.use_ddp2:
+        #     loss = loss.unsqueeze(0)
+
+
         reward = reward.clone().detach().to(self.device).item()
 
         steps = torch.tensor(self.global_step).to(self.device)
@@ -313,26 +301,53 @@ class DQNLightning(pl.LightningModule):
                'reward': reward,
                'steps': steps}
 
-        # Log step-level metrics
-        # Log environment step metrics
-        self.log("env_step/reward", reward, on_step=False, on_epoch=True, prog_bar=False)
-        self.log("env_step/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=False)
-        self.log("env_step/total_holding_cost_ot_fcs", info['holding_qty_ot'].sum().item(), on_step=False, on_epoch=True)
-        self.log("env_step/total_shortage_cost_ot_fcs", info['shortage_qty_ot'].sum().item(), on_step=False, on_epoch=True)
+        # Single loop for all item and FC specific operations
+        for item_id in self.item_ids:
+            item_info = info_dict[item_id]
 
-        if self.log_fc_metrics:
-            # Log per-FC metrics
+            # Update OT metrics
+            self.avg_holding_qty_ot(item_info['holding_qty_ot'].sum())
+            self.total_holding_cost_ot(item_info['holding_qty_ot'].sum())
+            self.avg_shortage_cost_ot(item_info['shortage_qty_ot'].sum())
+            self.total_shortage_cost_ot(item_info['shortage_qty_ot'].sum())
+
+            # Environment step metrics with item_id
+            self.log(f"env_step/item_{item_id}/reward", item_info['reward'].sum(), on_step=False, on_epoch=True, prog_bar=False)
+            self.log(f"env_step/item_{item_id}/loss", loss.item(), on_step=False, on_epoch=True, prog_bar=False)
+            self.log(f"env_step/item_{item_id}/total_holding_cost_ot_fcs", item_info['holding_qty_ot'].sum().item(),
+                     on_step=False, on_epoch=True)
+            self.log(f"env_step/item_{item_id}/total_shortage_cost_ot_fcs", item_info['shortage_qty_ot'].sum().item(),
+                     on_step=False, on_epoch=True)
+
+            # FC-specific metrics and logging with item_id
             for fc in range(self.num_fcs):
-                # self.log(f"fc_{fc}/reward", reward_vec[fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/holding_qty_pr", info['holding_qty_pr'][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/shortage_qty_pr", info['shortage_qty_pr'][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/inv_at_day_start", info["inv_at_beginning_of_day"][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/inv_after_replen", info["inv_after_replen"][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/inv_at_end_of_day", info["inv_at_end_of_day"][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/action", info["action"][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/repl_rec", info["repl_rec"][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/sales_at_FC", info["sales_at_FC"][fc], on_step=False, on_epoch=True)
-                self.log(f"fc_{fc}/mapped_dem", info["mapped_dem"][fc], on_step=False, on_epoch=True)
+                # Update metrics
+                self.fc_holding_costs_pr_avg[fc](item_info['holding_qty_pr'][fc])
+                self.fc_shortage_costs_pr_avg[fc](item_info['shortage_qty_pr'][fc])
+                self.fc_holding_costs_pr_sum[fc](item_info['holding_qty_pr'][fc])
+                self.fc_shortage_costs_pr_sum[fc](item_info['shortage_qty_pr'][fc])
+
+                if self.log_fc_metrics:
+                    self.log(f"fc_{fc}/item_{item_id}/holding_qty_pr", item_info['holding_qty_pr'][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/shortage_qty_pr", item_info['shortage_qty_pr'][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/inv_at_day_start", item_info["inv_at_beginning_of_day"][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/inv_after_replen", item_info["inv_after_replen"][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/inv_at_end_of_day", item_info["inv_at_end_of_day"][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/action", item_info["action"][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/repl_rec", item_info["repl_rec"][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/sales_at_FC", item_info["sales_at_FC"][fc],
+                             on_step=False, on_epoch=True)
+                    self.log(f"fc_{fc}/item_{item_id}/mapped_dem", item_info["mapped_dem"][fc],
+                             on_step=False, on_epoch=True)
+
+
 
         # End of episode
         if done:
@@ -341,33 +356,40 @@ class DQNLightning(pl.LightningModule):
             episode_avg_reward = self.avg_episodic_reward.compute()
             self.episode_rewards.append(episode_reward.item())
 
-            # Log episode-level metrics only when an episode is done
-            self.log("episode/total_reward", episode_reward.item(), on_step=False, on_epoch=True, prog_bar=False)
-            self.log("episode/avg_reward", episode_avg_reward.item(), on_step=False, on_epoch=True, prog_bar=False)
+            # Log episode metrics with item_id
+            for item_id in self.item_ids:
+                self.log(f"episode/item_{item_id}/total_reward", episode_reward.item(),
+                         on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f"episode/item_{item_id}/avg_reward", episode_avg_reward.item(),
+                         on_step=False, on_epoch=True, prog_bar=False)
+                self.log(f"episode/item_{item_id}/length", self.episode_length.compute(),
+                         on_step=False, on_epoch=True)
+                self.log(f"episode/item_{item_id}/avg_loss", self.train_loss.compute(),
+                         on_step=False, on_epoch=True)
+                self.log(f"episode/item_{item_id}/avg_holding_qty_ot", self.avg_holding_qty_ot.compute(),
+                         on_step=False, on_epoch=True)
+                self.log(f"episode/item_{item_id}/total_holding_qty_ot", self.total_holding_cost_ot.compute(),
+                         on_step=False, on_epoch=True)
+                self.log(f"episode/item_{item_id}/avg_shortage_qty_ot", self.avg_shortage_cost_ot.compute(),
+                         on_step=False, on_epoch=True)
+                self.log(f"episode/item_{item_id}/total_shortage_qty_ot", self.total_shortage_cost_ot.compute(),
+                         on_step=False, on_epoch=True)
 
-            self.log("episode/length", self.episode_length.compute(), on_step=False, on_epoch=True)
-            self.log("episode/avg_loss", self.train_loss.compute(), on_step=False, on_epoch=True)
-            self.log("episode/avg_holding_qty_ot", self.avg_holding_qty_ot.compute(), on_step=False, on_epoch=True)
-            self.log("episode/total_holding_qty_ot", self.total_holding_cost_ot.compute(), on_step=False, on_epoch=True)
-            self.log("episode/avg_shortage_qty_ot", self.avg_shortage_cost_ot.compute(), on_step=False, on_epoch=True)
-            self.log("episode/total_shortage_qty_ot", self.total_shortage_cost_ot.compute(), on_step=False, on_epoch=True)
-
-            if self.log_fc_metrics:
-                for fc in range(self.num_fcs):
-                    self.log(f"episode/fc_{fc}/avg_reward", self.fc_rewards_avg[fc].compute(), on_step=False,
-                             on_epoch=True)
-                    self.log(f"episode/fc_{fc}/avg_holding_qty_pr", self.fc_holding_costs_pr_avg[fc].compute(),
-                             on_step=False, on_epoch=True)
-                    self.log(f"episode/fc_{fc}/avg_shortage_qty_pr", self.fc_shortage_costs_pr_avg[fc].compute(),
-                             on_step=False, on_epoch=True)
-                    self.log(f"episode/fc_{fc}/total_reward", self.fc_rewards_sum[fc].compute(), on_step=False,
-                             on_epoch=True)
-                    self.log(f"episode/fc_{fc}/total_holding_qty_pr", self.fc_holding_costs_pr_sum[fc].compute(),
-                             on_step=False,
-                             on_epoch=True)
-                    self.log(f"episode/fc_{fc}/total_shortage_qty_pr", self.fc_shortage_costs_pr_sum[fc].compute(),
-                             on_step=False,
-                             on_epoch=True)
+                # Episode FC-specific metrics with item_id
+                if self.log_fc_metrics:
+                    for fc in range(self.num_fcs):
+                        self.log(f"episode/item_{item_id}/fc_{fc}/avg_reward",
+                                 self.fc_rewards_avg[fc].compute(), on_step=False, on_epoch=True)
+                        self.log(f"episode/item_{item_id}/fc_{fc}/avg_holding_qty_pr",
+                                 self.fc_holding_costs_pr_avg[fc].compute(), on_step=False, on_epoch=True)
+                        self.log(f"episode/item_{item_id}/fc_{fc}/avg_shortage_qty_pr",
+                                 self.fc_shortage_costs_pr_avg[fc].compute(), on_step=False, on_epoch=True)
+                        self.log(f"episode/item_{item_id}/fc_{fc}/total_reward",
+                                 self.fc_rewards_sum[fc].compute(), on_step=False, on_epoch=True)
+                        self.log(f"episode/item_{item_id}/fc_{fc}/total_holding_qty_pr",
+                                 self.fc_holding_costs_pr_sum[fc].compute(), on_step=False, on_epoch=True)
+                        self.log(f"episode/item_{item_id}/fc_{fc}/total_shortage_qty_pr",
+                                 self.fc_shortage_costs_pr_sum[fc].compute(), on_step=False, on_epoch=True)
 
             # Log custom episode count
             # self.log("episode/count", self.episode_count, on_step=False, on_epoch=True)
@@ -393,7 +415,8 @@ class DQNLightning(pl.LightningModule):
             self.episode_length.reset()
 
             # Reset the environment for the next episode
-            self.env.reset()
+            #self.env.reset()
+            self.agent.reset()
 
         return {'loss': loss, 'reward': reward}
 
@@ -409,7 +432,34 @@ class DQNLightning(pl.LightningModule):
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, self.trainer.max_epochs, 0)
         return [optimizer], [lr_scheduler]
 
-     def _dataloader(self) -> DataLoader:
+    # def test_step(self, batch, batch_idx):
+    #     self.net.eval()
+    #     total_steps = 60  # test data size = 60 days
+    #     state = self.env.reset(options={'test': True})
+    #     self.agent.state = state  # Update agent's state
+    #
+    #     for i in range(total_steps):
+    #         reward, done, info = self.agent.play_step(self.net, epsilon=0, device=self.device)
+    #
+    #         # Log metrics
+    #         self.log("test/inv_after_replen", sum(info['inv_after_replen']), on_step=False, on_epoch=True)
+    #         self.log("test/mapped_dem", sum(info['mapped_dem']), on_step=False, on_epoch=True)
+    #         self.log("test/inv_at_end_of_day", sum(info['inv_at_end_of_day']), on_step=False, on_epoch=True)
+    #
+    #         for fc in range(self.num_fcs):
+    #             self.log(f"test/fc_{fc}/inv_after_replen", info['inv_after_replen'][fc], on_step=False, on_epoch=True)
+    #             self.log(f"test/fc_{fc}/shortage_cost", info['shortage_cost'][fc], on_step=False, on_epoch=True)
+    #             self.log(f"test/fc_{fc}/holding_cost", info['holding_cost'][fc],on_step=False, on_epoch=True)
+    #             self.log(f"test/fc_{fc}/mapped_dem", info['mapped_dem'][fc], on_step=False, on_epoch=True)
+    #
+    #
+    #         if done:
+    #             break
+    #
+    #     return None
+
+
+    def _dataloader(self) -> DataLoader:
         """Initialize the Replay Buffer dataset used for retrieving experiences"""
         dataset = RLDataset(self.buffer, self.hparams.dataset_sample_size)
         dataloader = DataLoader(dataset=dataset,
@@ -436,3 +486,44 @@ class DQNLightning(pl.LightningModule):
     def get_device(self, batch) -> str:
         """Retrieve device currently being used by minibatch"""
         return batch[0].device.index if self.on_gpu else 'cpu'
+
+
+if __name__=="__main__":
+    pl.seed_everything(3407)
+    root = rootutils.setup_root(__file__, pythonpath=True)
+
+    # # Initialize replay buffer
+    # buffer = ReplayBuffer(config.data.replay_size)
+    #
+    # # Initialize data module
+    # data_module = RLDataModule(buffer, config.batch_size)
+
+    # buffer_cfg = omegaconf.OmegaConf.load(root / "configs" / "data" / "buffer.yaml")
+    # buffer = hydra.utils.instantiate(buffer_cfg)
+
+    model_cfg = omegaconf.OmegaConf.load(root / "configs" / "model" / "Single_FC.yaml")
+    model = hydra.utils.instantiate(model_cfg)
+
+
+    trainer = pl.Trainer(accelerator='cpu',
+            # gpus=1,
+            # distributed_backend='dp',
+            max_epochs=1000,
+            #early_stop_callback=False,
+            val_check_interval=100
+        )
+
+    # Create a Tuner
+    tuner = Tuner(trainer)
+    # finds learning rate automatically
+    # sets hparams.lr or hparams.learning_rate to that learning rate
+    tuner.lr_find(model, max_lr=0.9, min_lr=1e-7)
+    # Auto-scale batch size with binary search
+    # tuner.scale_batch_size(model, mode="binsearch")
+    print("Tuned Learning Rate is :", model.hparams.lr)
+    print("Tuned Learning Rate is :", model.lr)
+
+
+
+    # trainer.fit(model)
+    # train

@@ -109,8 +109,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if cfg.get("train"):
         log.info("Starting training!")
         trainer.fit(model=model, ckpt_path=cfg.get("ckpt_path"))
-        num_items = len(cfg.get('item_ids'))
-        checkpoint_path = (f"{cfg.paths.output_dir}/checkpoints_{num_items}items_{cfg.get('num_fcs')}FCs/final_model.ckpt")
+        items = list(cfg.item_ids)
+        print(f"Items in the run : {items}")
+        checkpoint_path = (f"{cfg.paths.output_dir}/checkpoints/final_model.ckpt")
         object_dict['checkpoint_path'] = checkpoint_path
         trainer.save_checkpoint(checkpoint_path)
         log.info(f"Final model saved to {checkpoint_path}")
@@ -119,12 +120,71 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     if cfg.get("test"):
         log.info("Starting testing!")
-        ckpt_path = trainer.checkpoint_callback.best_model_path
-        if ckpt_path == "":
-            log.warning("Best ckpt not found! Using current weights for testing...")
-            ckpt_path = None
-        trainer.test(model=model, ckpt_path=checkpoint_path)
-        log.info(f"Best ckpt path: {ckpt_path}")
+        checkpoint_path = (f"{cfg.paths.output_dir}/checkpoints/final_model.ckpt")
+        if os.path.exists(checkpoint_path):
+            print("Checkpoint file found")
+        else:
+            print("Manual Checkpoint File does not exist.")
+            checkpoint_path = trainer.checkpoint_callback.best_model_path
+            if checkpoint_path == "":
+                log.warning("Best ckpt not found! Using current weights for testing...")
+                checkpoint_path = None
+
+
+        # trainer.test(model=model, ckpt_path=checkpoint_path)
+        log.info(f"Best ckpt path: {checkpoint_path}")
+
+
+        # Run your policy test
+        test_mode_configs = {'-test_sim': [False, 1000], '-test_act': [True, 2]}
+        run_name_prefix = f"{cfg.get('run_name')}"
+
+        for test_suffix, test_config in test_mode_configs.items():
+            test_mode, num_episodes = test_config
+
+            log.info(f"Running policy test with mode: {test_suffix}, episodes: {num_episodes}")
+
+            # Run multi-episode test
+            policy_results = multi_item_test_multi_episode(
+                model_cfg=cfg.model,
+                checkpoint_path=checkpoint_path,
+                num_episodes=num_episodes,
+                test_mode=test_mode,
+                base_seed=cfg.seed,
+                new_item_ids=cfg.get('item_ids')
+            )
+
+            # Save results for each item
+            for item_id in cfg.get('item_ids'):
+                [detailed_df, detailed_fc_df, q_values_df, aggregate_stats, sla_df, dos_df] = policy_results[item_id]
+
+                num_items = len(cfg.get('item_ids'))
+                run_name = run_name_prefix + f"{num_items}items_{cfg.get('num_fcs')}FCs_{item_id}"
+
+                # Create save directory within the training output directory
+                # save_log_path = Path(cfg.paths.root_dir) / f"notebooks/policy_logs/{run_name}{test_suffix}"
+
+                save_log_path = Path(cfg.paths.output_dir) / f"{run_name}{test_suffix}"
+                save_log_path.mkdir(parents=True, exist_ok=True)
+                log.info(f"Saving test results to {save_log_path}")
+
+                # Save all results
+                detailed_df.to_csv(save_log_path / "test_policy_overall_config.csv", index=False)
+                detailed_fc_df.to_csv(save_log_path / "test_policy_FC_config.csv", index=False)
+                q_values_df.to_csv(save_log_path / "q_values_analysis.csv", index=False)
+                sla_df.to_csv(save_log_path / "sla_analysis.csv", index=False)
+                dos_df.to_csv(save_log_path / "dos_analysis.csv", index=False)
+
+                # Save aggregate statistics
+                for metric_type in ['mean', 'std', 'min', 'max']:
+                    aggregate_stats[f'overall_{metric_type}'].to_csv(
+                        save_log_path / f"aggregate_overall_{metric_type}.csv", index=False)
+                    aggregate_stats[f'fc_{metric_type}'].to_csv(
+                        save_log_path / f"aggregate_fc_{metric_type}.csv", index=False)
+
+        log.info(f"Policy testing completed. Results saved in {cfg.paths.output_dir}/test_results/")
+
+
 
     print("Tuned Learning Rate was :", model.hparams.lr)
     test_metrics = trainer.callback_metrics

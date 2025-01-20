@@ -40,18 +40,27 @@ class StateSpace:
 
         # Padding for past sales to get rs_lt during S0
         self.max_lt = int(max(param[0] for param in lt_ecdfs[0]))  # Approximate max LT
-        self.lbw = 2  # Look back window for x timesteps -> Make corresponding changes in get_state_dim and obs_size in Multi_FC_OT
-        self.max_pending_actions = 5
-        self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
-        self.action_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
-        self.multiplier_history = torch.zeros((self.num_fcs, forecast_horizon + self.max_lt), dtype=torch.float32)
+        self.lbw = 7  # Look back window for x timesteps -> Make corresponding changes in get_state_dim and obs_size in Multi_FC_OT
+
+        self.padding_length = max(self.max_lt, self.lbw)
+
+        self.max_pending_actions = 4
+        self.sales_history = torch.zeros((self.num_fcs, forecast_horizon + self.padding_length), dtype=torch.float32)
+        self.action_history = torch.zeros((self.num_fcs, forecast_horizon + self.padding_length), dtype=torch.float32)
+        self.multiplier_history = torch.zeros((self.num_fcs, forecast_horizon + self.padding_length), dtype=torch.float32)
+
+        ## Add self.repl_ordered_history
+        self.repl_ordered_history = torch.zeros((self.num_fcs, forecast_horizon + self.padding_length), dtype=torch.float32)
 
         # Making sure to replicate the situation where there were prior actions before S0 to get action_pipeline
 
 
         # Random initial sales when env is reset for prior timesteps
         # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
-        self.sales_history[:, -self.max_lt:] = torch.randint(0, 20, (self.num_fcs, self.max_lt))
+        self.sales_history[:, -self.padding_length:] = torch.randint(0, 20, (self.num_fcs, self.padding_length))
+
+        # self.repl_ordered_history[:, -self.padding_length:] = torch.randint(0, 20, (self.num_fcs, self.padding_length))
+        self.repl_ordered_history[:, -self.padding_length:] = torch.randint(0, 20, (self.num_fcs, self.padding_length))
 
 
         self.zero_state()
@@ -76,10 +85,11 @@ class StateSpace:
         """
         self.current_timestep = 0
         # self.on_hand = torch.ceil(torch.rand(self.num_fcs, dtype=torch.float32) * 100)
-        self.on_hand = torch.randint(0, 100, (self.num_fcs,)).float()
+        self.on_hand = torch.randint(0, 200, (self.num_fcs,)).float()
 
         # Vectorized action pipeline
-        self.action_pipeline = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx, 4))
+        # self.action_pipeline = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx, 4))
+        self.action_pipeline = torch.zeros((self.num_fcs, self.forecast_horizon + self.pipeline_start_idx, 5))  # 5 for repl_ordered
         # To figure out the in-transit vs executed
         self.pipeline_mask = torch.zeros((self.num_fcs, self.forecast_horizon+ self.pipeline_start_idx), dtype=torch.bool)
 
@@ -99,13 +109,21 @@ class StateSpace:
                 # print(fc,lt)
                 multiplier = int(self.sales_history[fc, -self.lbw:].mean().item()) # Adding this line
 
+                ## repl_ordered_history needs to be defined
+                repl_ordered = int(self.repl_ordered_history[fc, -self.lbw:].mean().item())
+
+
                 # Use t as the index directly, no offset needed here
                 idx = t
-                self.action_pipeline[fc, idx] = torch.tensor([action, timestamp, lt, multiplier])
+                # self.action_pipeline[fc, idx] = torch.tensor([action, timestamp, lt, multiplier])
+                self.action_pipeline[fc, idx] = torch.tensor([action, timestamp, lt, multiplier, repl_ordered])  # Added repl_ordered
                 self.pipeline_mask[fc, idx] = True
 
                 self.action_history[fc, -1] = action
                 self.multiplier_history[fc, -1] = multiplier
+
+                ## Check if self.repl_ordered_history needs to be updated here or not
+                self.repl_ordered_history[fc, -1] = repl_ordered
 
                 # Any prior RP. These will get replenished based on LT
                 # self.action_pipeline[fc].append((action, timestamp,lt,multiplier))
@@ -164,7 +182,8 @@ class StateSpace:
         self.forecast = forecast
 
     @torch.no_grad()
-    def update(self, sales: torch.Tensor, actions: torch.Tensor, multiplier:torch.Tensor, repl_received: torch.Tensor):
+    # def update(self, sales: torch.Tensor, actions: torch.Tensor, multiplier:torch.Tensor, repl_received: torch.Tensor):
+    def update(self, sales: torch.Tensor, actions: torch.Tensor, multiplier: torch.Tensor, repl_received: torch.Tensor, repl_ordered: torch.Tensor):  # Added repl_ordered as a parameter
         """Update the state with new sales and actions."""
         assert sales.shape == actions.shape == (self.num_fcs,)
 
@@ -179,8 +198,11 @@ class StateSpace:
         self.multiplier_history = torch.roll(self.multiplier_history, shifts=-1, dims=1)
         self.multiplier_history[:, -1] = multiplier
 
+        ## update repl_ordered_history as well here
+        self.repl_ordered_history = torch.roll(self.repl_ordered_history, shifts=-1, dims=1)
+        self.repl_ordered_history[:, -1] = repl_ordered
 
-        # # Process replenishments and update inventory - [action, timestamp, lt, multiplier]
+        # # Process replenishments and update inventory - [action, timestamp, lt, multiplier] #Add repl_ordered
         execution_mask = (self.action_pipeline[:, :, 1] + self.action_pipeline[:, :,2] == self.current_timestep) & self.pipeline_mask
 
 
@@ -189,6 +211,7 @@ class StateSpace:
         new_on_hand = self.on_hand + repl_received - sales
         assert torch.all(new_on_hand >= 0), f"Negative on-hand inventory detected: {new_on_hand}"
         self.on_hand = torch.max(new_on_hand, torch.zeros_like(new_on_hand))  # Ensure non-negativity
+        # self.on_hand = new_on_hand
 
         # self.on_hand += repl_received
         # self.on_hand -= sales
@@ -204,7 +227,7 @@ class StateSpace:
                 lt = self.sample_lead_time(fc)
                 # empty_slot = (~self.pipeline_mask[fc]).nonzero(as_tuple=True)[0][0]
                 self.action_pipeline[fc, adjusted_timestep] = torch.tensor(
-                    [actions[fc].item(),self.current_timestep, lt, multiplier[fc].item()])
+                    [actions[fc].item(),self.current_timestep, lt, multiplier[fc].item(), repl_ordered[fc].item()]) #Added repl_ordered
                 self.pipeline_mask[fc, adjusted_timestep] = True
                 # lt = self.sample_constrained_lead_time(fc, self.current_timestep)
                 # print("Updates")
@@ -233,81 +256,117 @@ class StateSpace:
 
             # Replenishment should be received only if the LT for action in pipeline matches to today
             # Calculate replenishment received (if any) for this timestep
-            # repl_received = sum(action*mult for action, timestamp,lt,mult in self.action_pipeline[fc] if timestamp + lt == self.current_timestep)
-
             execution_mask = (self.action_pipeline[fc, :, 1] + self.action_pipeline[fc, :,2] == self.current_timestep) & self.pipeline_mask[fc]
-            repl_received = (self.action_pipeline[fc, :, 0] * self.action_pipeline[fc, :, 3] * execution_mask.float()).sum()
+            # repl_received = (self.action_pipeline[fc, :, 0] * self.action_pipeline[fc, :, 3] * execution_mask.float()).sum()
+            repl_received = (self.action_pipeline[fc, :, 4] * execution_mask.float()).sum() ## as per new logic for SS
 
             # On-hands after replenishment
             oh_repl = oh_curr + repl_received
 
             # Agent needs to see how much is left in the action pipeline yet to replen before taking an action.
             # Done after current timestamp replen is removed
-            # action_pipeline = sum(action*mult for action, _ ,_ ,mult in self.action_pipeline[fc])
-            future_mask = (self.action_pipeline[fc, :, 1] + self.action_pipeline[fc, :, 2] >= self.current_timestep) & self.pipeline_mask[fc]
-            action_pipeline = (self.action_pipeline[fc, :, 0] * self.action_pipeline[fc, :, 3] * future_mask.float()).sum()
+            # Calculate future transit inventory (excluding today's replenishment)
+
+            future_mask = (self.action_pipeline[fc, :, 1] + self.action_pipeline[fc, :, 2] > self.current_timestep) & self.pipeline_mask[fc]
+            # future_transit_inventory = ( self.action_pipeline[fc, :, 0] * self.action_pipeline[fc, :, 3] * future_mask.float()).sum()
+            future_transit_inventory = ( self.action_pipeline[fc, :, 4] * future_mask.float()).sum() ## as per new logic for SS
+
+            # Total inventory in transit (including today's replenishment)
+            total_inventory_in_transit = future_transit_inventory + repl_received
+
+
+            # Get pending actions
+            # pending_actions = self.action_pipeline[fc, future_mask, 0] * self.action_pipeline[fc, future_mask, 3]
+            pending_actions = self.action_pipeline[fc, future_mask, 4] ## As per new logic for SS
+
+            # Pad or truncate to fixed size
+            pending_actions_fixed = torch.zeros(self.max_pending_actions)
+            pending_actions_fixed[:pending_actions.shape[0]] = pending_actions[:self.max_pending_actions]  # 3 vs 5
+            # assert pending_actions.shape[0]<self.max_pending_actions,f"More actions that are missing at {self.current_timestep}"
 
             # next_lt = self.sample_lead_time(fc)  # Sample next LT for demand calculation
             dem_lt = self.forecast[fc, self.current_timestep:self.current_timestep + lt].sum()
 
+            # Calculate projected on-hands after lead time
+            projected_OH_after_LT = torch.max(torch.tensor(0.0), oh_repl + future_transit_inventory - dem_lt)
+
+            # Ensure no negative projections
+            assert projected_OH_after_LT >= 0, f"Negative projected inventory: {projected_OH_after_LT}"
+
             # Calculate demand during coverage period (CP) using the RP array
             cp_start = self.current_timestep + lt
             # cp_end = min(cp_start + torch.where(rp[cp_start:] == 1)[0][0].item() + 1, self.forecast_horizon)
-            next_rp = torch.where(self.rp_arrays[fc, cp_start+1:] == 1)[0]
+            next_rp = torch.where(self.rp_arrays[fc, self.current_timestep+1:] == 1)[0]
             if len(next_rp) > 0:
                 # because we index it from cp_start onwards, the indices obtained from torch.where will include cp_start as 0, so add +1 there,
                 # Another +1 is needed for the correct index to be used on the outer tensor
                 # if next_rp[0][0] is 0 which means the current step itself, then we need to pick the next index so that 2 timesteps start and end are used
-                cp_end = min(cp_start + 1 + next_rp[0].item(), self.forecast_horizon)
+                cp_end = min(cp_start + 1 + next_rp[0].item() , self.forecast_horizon)
             else:
                 cp_end = self.forecast_horizon
 
             dem_cp = self.forecast[fc, cp_start:cp_end].sum()
 
+            # Calculate expected inventory to replenish
+            expected_inv_repl = torch.max(dem_cp - projected_OH_after_LT, torch.tensor(0.0))
+
             # Realized sales for past lt time-steps
-            # rs_lt = self.sales_history[fc, -lt:].sum()
-            rs_avg = self.sales_history[fc, -(self.lbw):].mean()
+            # Historical sales statistics
+            rs_lt = self.sales_history[fc, -self.lbw:]  # Last 7 days of sales
+            rs_avg = rs_lt.mean()  # Average over 7 days
+            rs_std = rs_lt.std()  # Standard deviation of sales
+
+            #Karthik - Setting fc_multiplier to be the average of dem_cp and sales average
+            # fc_multiplier = (dem_cp+rs_avg.item())/2
+            #fc_multiplier = int(rs_avg.item())
+            fc_multiplier = dem_cp
+
 
             # Calculate days left till next decision
             next_decision = torch.where(self.rp_arrays[fc,self.current_timestep:] == 1)[0]
             days_left = next_decision[0].item() if len(next_decision) > 0 else 0
 
-            # Get pending actions
-            pending_actions = self.action_pipeline[fc, future_mask, 0] * self.action_pipeline[fc, future_mask, 3]
-            # Pad or truncate to fixed size
-            pending_actions_fixed = torch.zeros(self.max_pending_actions)
-            pending_actions_fixed[:pending_actions.shape[0]] = pending_actions[:self.max_pending_actions] # 3 vs 5
 
-            # act_hist = list(self.action_history[fc, -(self.lbw):])
             # Mask action history to include only actions in transit
-            masked_act_hist = self.action_history[fc, -self.lbw:] * future_mask[-self.lbw:]
-            rs_lt = list(self.sales_history[fc, -(self.lbw):])
-            # dem_lt = list(self.forecast[fc, self.current_timestep:self.current_timestep + lt])
-            fc_multiplier = int(rs_avg.item())  # self.forecast[fc, cp_start:cp_end].mean()
-            # multip = list(self.multiplier_history[fc, -(self.lbw):])
+            # masked_act_hist = self.action_history[fc, -self.lbw:] * future_mask[-self.lbw:]
+
 
             multip = torch.zeros(self.max_pending_actions)
             multip[:pending_actions.shape[0]] = self.action_pipeline[fc, future_mask, 3][:self.max_pending_actions]
 
             # previous state space - oh_curr, action_pipeline, repl_received, oh_repl, dem_cp, dem_lt, rs_lt , days_left
-            #
             # print(f"FC {fc}: oh_curr = {oh_curr}, oh_repl = {oh_repl}, repl_received = {repl_received}, fc_multiplier = {fc_multiplier}, dem_lt:{dem_lt}, dem_cp:{dem_cp}")
-            # fc_state = torch.tensor([oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt] +act_hist+ multip+ rs_lt, dtype=torch.float32)
+
+            #dem_cp, fc_multiplier = fc_multiplier, dem_cp
+
+            # Create state vector with all features
             fc_state = torch.cat([
-                torch.tensor([oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt]),
-                pending_actions_fixed,
-                multip,
-                # masked_act_hist,
-                torch.tensor(rs_lt),
+                torch.tensor([
+                    oh_curr,  # Current inventory
+                    dem_cp,  # Coverage period demand
+                    repl_received,  # Today's replenishment
+                    oh_repl,  # Inventory after replenishment
+                    rs_avg.item(),  # Sales average
+                    dem_lt,  # Lead time demand
+                    #total_inventory_in_transit,  # Total inventory in transit
+                    future_transit_inventory,  # Future transit inventory (excluding today)
+                    rs_std,  # Sales standard deviation
+                    projected_OH_after_LT,  # Projected inventory after lead time
+                    expected_inv_repl,  # Expected order quantity needed
+                ]),
+                pending_actions_fixed,  # Individual pending actions --> These are not actions but these are action*multip which is inv_ordered
+                multip,  # Multipliers for pending actions --> This is not required in state space, we can drop this
+                rs_lt,  # Historical sales (7 days)
             ])
+
             states.append(fc_state)
             multipliers.append(fc_multiplier)
         return torch.cat(states), torch.tensor(multipliers)  #states #torch.cat(states)
 
     def get_state_dim(self) -> int:
         """Return the dimension of the state vector."""
-        base_features = 6  # oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt, action_pipeline, days_left
-        return (base_features + self.max_pending_actions*2 + self.lbw ) * self.num_fcs
+        base_features = 10  # oh_curr, fc_multiplier, repl_received, oh_repl, dem_cp, dem_lt, etc.,
+        return (base_features + self.max_pending_actions*2 + self.lbw) * self.num_fcs
 
         # return 12 * self.num_fcs
 
@@ -339,8 +398,14 @@ def step(input,demand):
     # print("\n",inventory_state.action_pipeline)
     # print(f"inv_begin: {inv_begin}, inv_repl :{inv_repl}, repl:{repl_received}")
     sales = torch.min(inv_repl, demand) # random sales
-    actions = torch.ceil(torch.rand(num_fcs) * 3)  # Random actions
-    inventory_state.update(sales.flatten(), actions.flatten(),multiplier.flatten(),repl_received.flatten())
+    actions = torch.ceil(torch.rand(num_fcs) * 5)  # Random actions
+
+    safety_stock = actions * multiplier
+    dem_cp_fc = state[1::fc_st_dim].reshape(-1, num_fcs)  # Change to 4 for non-swap (multip & dem_cp swap)
+    proj_oh_lt_fc = state[8::fc_st_dim].reshape(-1, num_fcs)
+    repl_ordered = torch.max(torch.tensor(0), safety_stock + dem_cp_fc - proj_oh_lt_fc)
+
+    inventory_state.update(sales.flatten(), actions.flatten(),multiplier.flatten(),repl_received.flatten(), repl_ordered.flatten())
 
     next_state = inventory_state.get_state()
     # print(f"Next state: {next_state}, sales:{ sales.item()}, action :{actions.item()}, repl:{repl_received.item()}")
@@ -379,6 +444,7 @@ if __name__=="__main__":
     # state = inventory_state.get_state()
 
     fc_st_dim = inventory_state.get_state_dim() // num_fcs
+    print(fc_st_dim)
     # Simulate a few timesteps
     for i in range(100):
         print(i, seed)
@@ -420,4 +486,29 @@ if __name__=="__main__":
     #         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
     #         state_space.update(sales, actions)
     #
-    #         # print("sales for
+    #         # print("sales for 3 FCs:" , sales)
+    #         # print("actions", actions)
+    #         current_state = state_space.get_state()
+    #         print(f"Current state: {current_state}")
+    #         # print(f"State dimension: {state_space.get_state_dim()}")
+    #
+    #     seed +=3
+    #     print(seed)
+    #     # state_space.set_seed(seed)
+    #     # Update the seed and reinitialize the existing state space
+    #     state_space.set_seed(seed)
+    #     state_space.reinitialize()
+    #     print("\n\n Using new seed \n\n")
+    #
+    #
+    #     # Simulate a few timesteps
+    #     for _ in range(30):
+    #         sales = torch.ceil(torch.rand(num_fcs) * 10)  # Random sales
+    #         actions = torch.ceil(torch.rand(num_fcs) * 20)  # Random actions
+    #         state_space.update(sales, actions)
+    #
+    #         # print("sales for 3 FCs:" , sales)
+    #         # print("actions", actions)
+    #         current_state = state_space.get_state()
+    #         print(f"Current state: {current_state}")
+    #         # print(f"State dimension: {state_space.get_state_dim()}")

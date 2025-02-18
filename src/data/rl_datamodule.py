@@ -1,3 +1,5 @@
+from typing import Union
+
 import torch
 import os
 import hydra
@@ -5,6 +7,8 @@ import omegaconf
 import rootutils
 import lightning as pl
 from torch.utils.data import DataLoader, IterableDataset, ConcatDataset, Dataset, random_split
+
+from src.data.components.PER_buffer import PrioritizedReplayBuffer
 from src.data.components.replay_buffer import ReplayBuffer
 
 class RLDataset(IterableDataset):
@@ -16,17 +20,24 @@ class RLDataset(IterableDataset):
         sample_size: number of experiences to sample at a time
     """
 
-    def __init__(self, buffer: ReplayBuffer, sample_size: int = 200) -> None:
+    def __init__(self, buffer: Union[ReplayBuffer, PrioritizedReplayBuffer], sample_size: int = 200) -> None:
         self.buffer = buffer
         self.sample_size = sample_size
+        self.is_per = isinstance(buffer, PrioritizedReplayBuffer)
 
     def __iter__(self): # -> Tuple:
-        states, actions, rewards, dones, new_states = self.buffer.sample(self.sample_size)
-        for i in range(len(dones)):
-            yield states[i], actions[i], rewards[i], dones[i], new_states[i]
+        if self.is_per:
+            batch, indices, weights = self.buffer.sample(self.sample_size)
+            states, actions, rewards, dones, next_states = batch
+            for i in range(len(dones)):
+                yield states[i], actions[i], rewards[i], dones[i], next_states[i], indices[i], weights[i]
+        else:
+            states, actions, rewards, dones, next_states = self.buffer.sample(self.sample_size)
+            for i in range(len(dones)):
+                yield states[i], actions[i], rewards[i], dones[i], next_states[i]
 
 class RLDataModule(pl.LightningDataModule):
-    def __init__(self, buffer: ReplayBuffer, batch_size: int):
+    def __init__(self, buffer: Union[ReplayBuffer, PrioritizedReplayBuffer], batch_size: int):
         super().__init__()
         self.buffer = buffer
         self.batch_size = batch_size

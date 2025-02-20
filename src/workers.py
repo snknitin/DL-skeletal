@@ -4,9 +4,25 @@ import lightning as pl
 from torch.utils.data import DataLoader, IterableDataset
 from typing import Union
 import numpy as np
-
+import time
 
 # Simplified version of your RLDataset
+class TestRLDataset(IterableDataset):
+    def __init__(self, sample_size: int = 4096):
+        self.sample_size = sample_size
+
+    def __iter__(self):
+        # Generate dummy data of specified size
+        for i in range(self.sample_size):
+            # Simulate your experience tuple with smaller tensors
+            state = torch.randn(4)
+            action = torch.tensor([1])
+            reward = torch.tensor([0.5])
+            done = torch.tensor([0])
+            next_state = torch.randn(4)
+            yield state, action, reward, done, next_state
+
+
 class TestRLDataset(IterableDataset):
     def __init__(self, sample_size: int = 4096):
         self.sample_size = sample_size
@@ -38,12 +54,14 @@ class TestLightningModule(pl.LightningModule):
 
     def _dataloader(self) -> DataLoader:
         dataset = TestRLDataset(sample_size=self.hparams.dataset_sample_size)
-        return DataLoader(
+        dataloader =  DataLoader(
             dataset=dataset,
             batch_size=self.hparams.batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=True if torch.cuda.is_available() else False
         )
+        # print("\n\nLenght of dataloader :", len(dataloader))
+        return dataloader
 
     def train_dataloader(self):
         return self._dataloader()
@@ -56,13 +74,15 @@ class TestLightningModule(pl.LightningModule):
         self.batches_in_epoch += 1
         self.current_epoch_steps += 1
 
-        print(f"\nStep Information:")
-        print(f"Global Step: {self.global_step}")
-        print(f"Current Epoch: {self.current_epoch}")
-        print(f"Batch Index: {batch_idx}")
-        print(f"Samples in Batch: {self.samples_in_batch}")
-        print(f"Batches in Epoch so far: {self.batches_in_epoch}")
-        print(f"Steps in Epoch so far: {self.current_epoch_steps}")
+        if self.global_step%100==0:
+
+            print(f"\nStep Information:")
+            print(f"Global Step: {self.global_step}")
+            print(f"Current Epoch: {self.current_epoch}")
+            print(f"Batch Index: {batch_idx}")
+            print(f"Samples in Batch: {self.samples_in_batch}")
+            print(f"Batches in Epoch so far: {self.batches_in_epoch}")
+            print(f"Steps in Epoch so far: {self.current_epoch_steps}")
 
         # Dummy loss computation
         loss = self.net(states).mean()
@@ -91,13 +111,12 @@ def test_dataloader_behavior(
     model = TestLightningModule(
         dataset_sample_size=dataset_size,
         batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory = True,
-        persistent_workers=True
+        num_workers=num_workers
     )
 
     trainer = pl.Trainer(
         max_steps=max_steps,
+        accelerator="gpu",
         enable_progress_bar=True,
         logger=False,
         enable_checkpointing=False
@@ -107,7 +126,7 @@ def test_dataloader_behavior(
     print(f"Dataset Size: {dataset_size}")
     print(f"Batch Size: {batch_size}")
     print(f"Num Workers: {num_workers}")
-    print(f"Max Epochs: {max_steps}")
+    print(f"Max Steps: {max_steps}")
     print("-" * 50)
 
     trainer.fit(model)
@@ -116,11 +135,13 @@ def test_dataloader_behavior(
 if __name__ == "__main__":
     # Test different configurations
     configs = [
-        {"dataset_size": 256, "batch_size": 256, "num_workers": 0},
-        {"dataset_size": 256, "batch_size": 256, "num_workers": 1},
-        {"dataset_size": 4096, "batch_size": 256, "num_workers": 4},
+
+        # {"dataset_size": 256, "batch_size": 256, "num_workers": 1},
+        # {"dataset_size": 4096, "batch_size": 256, "num_workers": 2},
+        # {"dataset_size": 4096, "batch_size": 256, "num_workers": 4},
         {"dataset_size": 4096, "batch_size": 256, "num_workers": 8},
     ]
 
     for config in configs:
+        print("\n\n\n\n")
         test_dataloader_behavior(**config)

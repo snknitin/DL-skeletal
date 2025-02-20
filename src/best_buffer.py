@@ -6,7 +6,7 @@ import numpy as np
 # Import original and optimized implementations
 from torch.utils.data import IterableDataset
 from optimized_rl_dataset import RLMapDataset
-
+from batched_rl_dataset import BatchedRLDataset
 
 # Original implementation (for comparison)
 class OriginalRLDataset(IterableDataset):
@@ -106,6 +106,7 @@ if __name__ == "__main__":
         {'workers': 8, 'buffer_type': 'regular'},
         {'workers': 0, 'buffer_type': 'prioritized'},
         {'workers': 2, 'buffer_type': 'prioritized'},
+        {'workers': 4, 'buffer_type': 'prioritized'},
     ]
 
     print("=== Performance Comparison ===")

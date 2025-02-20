@@ -92,7 +92,7 @@ class BatchedRLDataset(Dataset):
         return self.batched_data[idx]
 
 
-class OptimizedRLDataModule:
+class BatchedRLDataModule:
     """Data module with optimized batch-based sampling"""
 
     def __init__(self,

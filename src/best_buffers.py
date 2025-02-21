@@ -56,7 +56,7 @@ class OriginalRLDataset(IterableDataset):
         return DataLoader(
             dataset=self,
             batch_size=batch_size,
-            num_workers=num_workers,  # Allow this for demonstration
+            num_workers=0,  # Allow this for demonstration
             pin_memory=torch.cuda.is_available()
         )
 
